@@ -138,7 +138,7 @@ See [QUICKREF.md](QUICKREF.md) for more common issues.
 ### Predicted vs True Position
 Heatmap showing reconstruction accuracy with y=x reference line (white dashed):
 
-![Predicted vs True X](examples/heatmap_predx_vs_truex.png)
+![Predicted vs True Y](examples/heatmap_predy_vs_truey.png)
 
 ### 2D Residual Heatmap
 Residual distribution vs independent variable with quantile overlays (red lines at 16%, 50%, 84%):
