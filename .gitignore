@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environments
+ndlar_flow.venv/
+venv/
+env/
+
+# Output directories (keep examples)
+processed_outputs_*/
+analytic_reco_*/
+!examples/
+
+# Data files
+*.hdf5
+*.h5
+*.npy
+
+# Temporary files
+*.tmp
+*.log
+*~
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

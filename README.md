@@ -60,14 +60,13 @@ HDF5 files → process_light_outputs.py → CSV (transformed coords)
 
 ## Current Status (October 2025)
 
-✅ **Phase 1 Complete**:
-- `utils.py` created with centralized transform functions
-- `process_light_outputs.py` refactored to use utils
-- Geometry loading functions consolidated
-
-⚠️ **Phase 2 Needed**:
-- `run_analytic_reco.py` has a bug where detector positions are NOT transformed to common frame
-- See [REFACTORING_NOTES.md](REFACTORING_NOTES.md) for fix instructions
+✅ **Fully Operational**:
+- `utils.py` provides centralized transform functions
+- `process_light_outputs.py` uses utils for coordinate transforms
+- `run_analytic_reco.py` correctly transforms detector geometry to common frame
+- 3D event displays with accurate detector positions
+- Full visualization suite: 1D residuals, 2D heatmaps, 3D event displays
+- Organized output directory structure with subdirectories for each plot type
 
 ## Requirements
 
@@ -77,18 +76,29 @@ HDF5 files → process_light_outputs.py → CSV (transformed coords)
 ## Output Structure
 
 ```
-processed_outputs_n100_nint1_mod123_dEweight_20251028-062823/
+processed_outputs_n100_nint1_mod123_dEweight_TIMESTAMP/
 ├── truth_reco_processed.csv    # Transformed event coordinates
 ├── processing_inputs.json       # Reproducibility metadata
 └── geom/
     └── tpc_bounds_mm.npy       # Cached TPC geometry
 
-analytic_reco_processed_outputs_n100_nint1_mod123_dEweight_20251028-062823/
-└── outputs_pde_20251028-132853/
-    ├── predictions.csv.gz       # predx, predy, predz
-    ├── manifest.json            # Run metadata
-    ├── resids_f_*.csv.gz       # 1D residual statistics
-    └── heatmap_*.png           # 2D visualizations
+analytic_reco_processed_outputs_n100_nint1_mod123_dEweight_TIMESTAMP/
+└── outputs_pde_TIMESTAMP/
+    ├── manifest.json                      # Run metadata
+    ├── predictions/
+    │   └── predictions.csv.gz             # predx, predy, predz
+    ├── residuals_1d/
+    │   └── resids_f_*.csv.gz              # 1D residual statistics
+    ├── plots_1d/
+    │   └── plot_1d_*_{mu,sig}.png         # 1D residual plots
+    ├── heatmaps/
+    │   ├── heatmaps_f_truex/              # Residuals vs truex
+    │   ├── heatmaps_f_truey/              # Residuals vs truey
+    │   ├── heatmaps_f_truez/              # Residuals vs truez
+    │   ├── heatmaps_f_total_signal/       # Residuals vs total_signal
+    │   └── pred_vs_true/                  # Predicted vs true positions
+    └── event_displays_3d/
+        └── event_display_3d_*.png         # 3D event visualizations
 ```
 
 ## Common Commands
@@ -110,7 +120,10 @@ python run_analytic_reco.py <csv> --uw --save
 ## Troubleshooting
 
 **Predictions way off from true positions?**
-→ Detector geometry not transformed to common frame. See [TRANSFORM_BUG_EXPLAINED.md](TRANSFORM_BUG_EXPLAINED.md)
+→ Verify detector geometry was transformed with `transform_geom()`. See [TRANSFORM_BUG_EXPLAINED.md](TRANSFORM_BUG_EXPLAINED.md)
+
+**3D event displays show wrong detector positions?**
+→ Ensure `transform_geom()` uses consistent `out_x/out_y/out_z` parameters matching plotting expectations
 
 **Missing geometry files?**
 → Check sibling repo: `../lrs_sanity_check/geom_files/light_module_desc-4.0.0.{csv,yaml}`
@@ -119,6 +132,28 @@ python run_analytic_reco.py <csv> --uw --save
 → Run preprocessing first to generate transformed coordinates
 
 See [QUICKREF.md](QUICKREF.md) for more common issues.
+
+## Example Outputs
+
+### Predicted vs True Position
+Heatmap showing reconstruction accuracy with y=x reference line (white dashed):
+
+![Predicted vs True X](examples/heatmap_predx_vs_truex.png)
+
+### 2D Residual Heatmap
+Residual distribution vs independent variable with quantile overlays (red lines at 16%, 50%, 84%):
+
+![Residuals vs TrueY](examples/heatmap_dr_vs_truey.png)
+
+### 1D Residual Profile
+Standard deviation of residuals with statistical uncertainties as a function of true position:
+
+![1D Residuals Sigma](examples/plot_1d_truez_sig.png)
+
+### 3D Event Display
+Event visualization showing detectors (sized by signal), true position (blue star), and predicted position (red star):
+
+![3D Event Display](examples/event_display_3d_dr.png)
 
 ## Contributing
 
