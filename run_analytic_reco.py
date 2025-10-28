@@ -1,30 +1,17 @@
 #!/usr/bin/env python3
 """
-Analytic reconstruction with differential (binned) residual stats + binnings export.
-
-Key points:
-- Always computes predx/predy/predz. Variable names never get a *_uw suffix.
-- `--uw` toggles amplitude weighting:
-    * default (no --uw): divide by 1/PDE (PDE-corrected)
-    * with    (--uw)   : do NOT divide by 1/PDE (unweighted)
-- Saving predictions: ONLY the three columns predx/predy/predz.
-- Differential residual μ/σ heatmap stats can be exported separately with `--export-stats`.
-- When exporting heatmap stats, a `binnings.json` is also written with the bin edges for:
-    truex/predx, truey/predy, truez/predz, dr, total_signal, log_total_signal.
-- You can choose the heatmap binning axes (default: truex vs truez) and bin counts.
-
-Examples:
-  # PDE-corrected predictions only (no files written)
-  python run_analytic_reco.py data.csv
-
-  # Unweighted predictions, save ONLY predx/predy/predz
-  python run_analytic_reco.py data.csv --uw --save
-
-  # Export differential stats (and binnings.json) WITHOUT saving predictions
-  python run_analytic_reco.py data.csv --export--stats
-
-  # Control binning and also save heatmap images
-  python run_analytic_reco.py data.csv --bins-x 30 --bins-z 40 --plots --save-plots --export-stats
+Analytic reconstruction with:
+- predx/predy/predz computation (names unchanged; --uw only affects directory name)
+- Minimalist 1D residual CSV exports (bin_x, *_mu, *_sig)
+- 1D μ/σ line plots vs chosen variables
+- Heatmaps: residual (y) vs independent variable (x) with RED 16/50/84% quantile overlays
+  * residuals: {dx, dy, dz, dr}
+  * independent vars: {truex, truey, truez, r(true), total_signal}
+  * total_signal uses LOG10-SPACED BINS and x-axis is set to log
+- Additionally, when --plot-2d-heatmaps is used, also plot:
+  * predx vs truex (with white dashed y=x)
+  * predy vs truey (with white dashed y=x)
+  * predz vs truez (with white dashed y=x)
 """
 
 from __future__ import annotations
@@ -39,36 +26,26 @@ import h5py
 import numpy as np
 import pandas as pd
 import yaml
-import warnings
 
-# Optional geometry helpers from a user's module.
-try:
-    from process_light_outputs import (
-        load_geom_csv,
-        load_geom_yaml,
-        compute_module_centres,
-    )
-    _HAS_PLO_MODULE = True
-except Exception:
-    _HAS_PLO_MODULE = False
+# Import geometry utilities from utils module
+from utils import (
+    compute_align_params,
+    transform_geom,
+    detector_means_by_id,
+    load_hdf_geometry,
+    load_geom_csv,
+    load_geom_yaml,
+    compute_module_centres,
+    compute_detector_offsets,
+    extract_pde_per_detector,
+)
 
-    def load_geom_csv(path: str) -> pd.DataFrame:
-        return pd.read_csv(path)
 
-    def load_geom_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
+DEFAULT_1D_VARS = ["truex", "truey", "truez", "dr", "total_signal"]
+HEATMAP_INDEP_VARS = ["truex", "truey", "truez", "r", "total_signal"]  # r = true radius
 
-    def compute_module_centres(mod_bounds_mm: np.ndarray) -> List[List[float]]:
-        centres = []
-        for mod in mod_bounds_mm:
-            centres.append([
-                float((mod[0][0] + mod[1][0]) / 2.0),
-                float((mod[0][1] + mod[1][1]) / 2.0),
-                float((mod[0][2] + mod[1][2]) / 2.0),
-            ])
-        return centres
 
+# ---------- small utils ----------
 
 def timestamped_outdir(base_dir: Path, mode_tag: str, tag: Optional[str]) -> Path:
     ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
@@ -79,45 +56,34 @@ def timestamped_outdir(base_dir: Path, mode_tag: str, tag: Optional[str]) -> Pat
     out_name = "_".join(parts)
     outdir = base_dir / out_name
     outdir.mkdir(parents=True, exist_ok=False)
-    return outdir
-
-
-def ensure_outdir_for_artifacts(args, mode_tag: str) -> Path:
-    """
-    Create an output directory when we need to write *anything*:
-    - predictions (args.save)
-    - stats (args.export_stats)
-    - plots (args.plots and args.save_plots)
-    """
-    base = Path(args.outdir) if args.outdir else args.input_csv.parent
-    prefixed_base = base.parent / f"analytic_reco_{base.name}"
-    outdir = timestamped_outdir(prefixed_base, mode_tag, args.tag)
     print("Saving outputs to:", outdir)
     return outdir
+
+
+def ensure_outdir(args, mode_tag: str) -> Path:
+    base = Path(args.outdir) if args.outdir else args.input_csv.parent
+    prefixed_base = base.parent / f"analytic_reco_{base.name}"
+    return timestamped_outdir(prefixed_base, mode_tag, args.tag)
 
 
 def sanitize_and_load_csv(input_csv: Path, x_cols: List[str]) -> Tuple[pd.DataFrame, List[str]]:
     df = pd.read_csv(input_csv)
     df = df.replace([np.inf, -np.inf], np.nan)
 
-    # Ensure truth exists
     required_truth = {"truex", "truey", "truez"}
     missing_truth = required_truth - set(df.columns)
     if missing_truth:
         raise ValueError(f"Missing required truth columns: {sorted(missing_truth)}")
 
-    # Drop rows with missing truths
     n_before = len(df)
     df = df.dropna(subset=["truex", "truey", "truez"], how="any").reset_index(drop=True)
     print(f"Dropped {n_before - len(df)} rows missing true positions")
 
-    # Replace NaNs in detector channels with 0
     present_x_cols = [c for c in x_cols if c in df.columns]
     if not present_x_cols:
         raise ValueError("No detector amplitude columns like det_#_max found.")
     df[present_x_cols] = df[present_x_cols].fillna(0.0)
 
-    # Compute total_signal & log
     df["total_signal"] = df[present_x_cols].sum(axis=1)
     n_before = len(df)
     df = df[df["total_signal"] > 0.0].reset_index(drop=True)
@@ -127,31 +93,7 @@ def sanitize_and_load_csv(input_csv: Path, x_cols: List[str]) -> Tuple[pd.DataFr
     return df, present_x_cols
 
 
-def load_hdf_geometry(hdf5_path: Path) -> Tuple[np.ndarray, float]:
-    with h5py.File(hdf5_path, "r") as f:
-        try:
-            mod_bounds_mm = np.array(f["geometry_info"].attrs["module_RO_bounds"])
-        except Exception as exc:
-            raise RuntimeError(f"Unable to read module_RO_bounds from {hdf5_path}: {exc}")
-        max_drift_distance = float(f["geometry_info"].attrs["max_drift_distance"])
-    return mod_bounds_mm, max_drift_distance
-
-
-def build_detector_positions(df_geom: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    def mean_for(col: str, det_idx: int) -> float:
-        vals = df_geom.loc[df_geom["Detector"] == det_idx, col]
-        if vals.empty:
-            return 0.0
-        return float(vals.mean())
-
-    det_pos_x = np.array([mean_for("x_offset", d) for d in range(16)], dtype=float)
-    det_pos_y = np.array([mean_for("y_offset", d) for d in range(16)], dtype=float)
-    det_pos_z = np.array([mean_for("z_offset", d) for d in range(16)], dtype=float)
-
-    det_pos_x = np.nan_to_num(det_pos_x, nan=0.0)
-    det_pos_y = np.nan_to_num(det_pos_y, nan=0.0)
-    det_pos_z = np.nan_to_num(det_pos_z, nan=0.0)
-    return det_pos_x, det_pos_y, det_pos_z
+# Note: load_hdf_geometry and build_detector_positions now imported from utils
 
 
 def compute_predictions(
@@ -170,7 +112,7 @@ def compute_predictions(
             full[:, i] = df[col].to_numpy(dtype=float, na_value=0.0)
 
     if uw:
-        weights = full  # unweighted (no 1/PDE)
+        weights = full
     else:
         if eff_per_det is None:
             eff_per_det = np.ones((16,), dtype=float)
@@ -198,158 +140,297 @@ def compute_predictions(
     return out
 
 
-def compute_differential_stats(
-    df_pred: pd.DataFrame,
-    x_axis: str = "truex",
-    z_axis: str = "truez",
-    bins_x: int = 24,
-    bins_z: int = 24,
-) -> Dict[str, pd.DataFrame]:
-    """
-    Bin events over (x_axis, z_axis) and compute per-bin μ/σ of residuals.
-    Returns tidy DataFrames with columns: bin_x_center, bin_z_center, mu, sigma
-    for each of 'dx','dy','dz','dr'.
-    """
-    # residuals
+def _residual_arrays(df_pred: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     dx = (df_pred["predx"] - df_pred["truex"]).to_numpy(dtype=float)
     dy = (df_pred["predy"] - df_pred["truey"]).to_numpy(dtype=float)
     dz = (df_pred["predz"] - df_pred["truez"]).to_numpy(dtype=float)
     dr = np.sqrt(dx**2 + dy**2 + dz**2)
-
-    bx = np.linspace(np.nanmin(df_pred[x_axis]), np.nanmax(df_pred[x_axis]), bins_x + 1)
-    bz = np.linspace(np.nanmin(df_pred[z_axis]), np.nanmax(df_pred[z_axis]), bins_z + 1)
-
-    # digitize once
-    ix = np.digitize(df_pred[x_axis].to_numpy(dtype=float), bx) - 1
-    iz = np.digitize(df_pred[z_axis].to_numpy(dtype=float), bz) - 1
-
-    # clamp to [0, bins-1]
-    ix = np.clip(ix, 0, bins_x - 1)
-    iz = np.clip(iz, 0, bins_z - 1)
-
-    # container for per-bin accumulations (indices -> list of values)
-    def accum(vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        mu = np.full((bins_x, bins_z), np.nan, dtype=float)
-        sg = np.full((bins_x, bins_z), np.nan, dtype=float)
-        buckets: Dict[Tuple[int, int], List[float]] = {}
-        for i in range(vals.size):
-            if not np.isfinite(vals[i]):
-                continue
-            key = (ix[i], iz[i])
-            buckets.setdefault(key, []).append(float(vals[i]))
-        for (i, j), arr in buckets.items():
-            m = np.mean(arr)
-            s = np.std(arr, ddof=0)
-            mu[i, j] = m
-            sg[i, j] = s
-        return mu, sg
-
-    mu_dx, sg_dx = accum(dx)
-    mu_dy, sg_dy = accum(dy)
-    mu_dz, sg_dz = accum(dz)
-    mu_dr, sg_dr = accum(dr)
-
-    # centers
-    cx = 0.5 * (bx[:-1] + bx[1:])
-    cz = 0.5 * (bz[:-1] + bz[1:])
-
-    # melt into tidy DataFrames
-    def to_df(mu: np.ndarray, sg: np.ndarray) -> pd.DataFrame:
-        cx_grid, cz_grid = np.meshgrid(cx, cz, indexing="ij")
-        flat = pd.DataFrame({
-            "bin_x_center": cx_grid.ravel(),
-            "bin_z_center": cz_grid.ravel(),
-            "mu": mu.ravel(),
-            "sigma": sg.ravel(),
-        })
-        return flat
-
-    return {
-        "dx": to_df(mu_dx, sg_dx),
-        "dy": to_df(mu_dy, sg_dy),
-        "dz": to_df(mu_dz, sg_dz),
-        "dr": to_df(mu_dr, sg_dr),
-        "edges": {"bx": bx.tolist(), "bz": bz.tolist()},  # include for convenience
-    }
+    return dx, dy, dz, dr
 
 
-def build_binnings_json(
+# ---------- 1D differentials (for CSVs and 1D plots) ----------
+
+def _edges_log10(indep: np.ndarray, bins: int) -> np.ndarray:
+    finite_pos = np.isfinite(indep) & (indep > 0)
+    if finite_pos.sum() == 0:
+        finite = np.isfinite(indep)
+        if finite.sum() == 0:
+            return np.array([1.0, 10.0])
+        mn = float(np.nanmin(indep[finite])); mx = float(np.nanmax(indep[finite]))
+        return np.linspace(mn, mx, bins + 1)
+    lo = float(indep[finite_pos].min()); hi = float(indep[finite_pos].max())
+    if lo == hi:
+        return np.array([lo, hi])
+    return np.logspace(np.log10(lo), np.log10(hi), bins + 1)
+
+
+def _edges_linear(indep: np.ndarray, bins: int) -> np.ndarray:
+    finite = np.isfinite(indep)
+    if finite.sum() == 0:
+        return np.array([0.0, 1.0])
+    lo = float(np.nanmin(indep[finite])); hi = float(np.nanmax(indep[finite]))
+    if lo == hi:
+        return np.array([lo, hi])
+    return np.linspace(lo, hi, bins + 1)
+
+
+def compute_differential_stats_1d_minimal(
     df_pred: pd.DataFrame,
-    bins_x: int,
-    bins_y: int,
-    bins_z: int,
-    bins_r: int,
-    bins_signal: int,
-) -> Dict[str, List[float]]:
+    var: str,
+    bins: int = 24,
+) -> pd.DataFrame:
     """
-    Build a dict of bin edges for true/pred (x,y,z), residual radius dr,
-    total_signal and log_total_signal. Linear bins between min/max of each.
+    Returns:
+      bin_x, dx_mu, dx_sig, dy_mu, dy_sig, dz_mu, dz_sig, dr_mu, dr_sig
+    Uses LOG10-SPACED bins when var == 'total_signal'.
     """
-    # residual radius
-    dx = (df_pred["predx"] - df_pred["truex"]).to_numpy(dtype=float)
-    dy = (df_pred["predy"] - df_pred["truey"]).to_numpy(dtype=float)
-    dz = (df_pred["predz"] - df_pred["truez"]).to_numpy(dtype=float)
-    dr = np.sqrt(dx**2 + dy**2 + dz**2)
+    dx, dy, dz, dr = _residual_arrays(df_pred)
 
-    def edges(series: pd.Series, n: int) -> List[float]:
-        s = series.replace([np.inf, -np.inf], np.nan).dropna()
-        if s.empty:
-            return []
-        mn, mx = float(s.min()), float(s.max())
-        if not np.isfinite(mn) or not np.isfinite(mx) or mn == mx:
-            return [mn, mx]
-        return np.linspace(mn, mx, n + 1).tolist()
+    if var == "dr":
+        indep = dr
+    elif var == "r":
+        indep = np.sqrt(df_pred["truex"]**2 + df_pred["truey"]**2 + df_pred["truez"]**2).to_numpy(dtype=float)
+    elif var in df_pred.columns:
+        indep = df_pred[var].to_numpy(dtype=float)
+    elif var == "tot_signal":
+        indep = df_pred["total_signal"].to_numpy(dtype=float)
+        var = "total_signal"
+    else:
+        raise ValueError(f"Unknown independent variable '{var}'")
 
-    binnings = {
-        "truex": edges(df_pred["truex"], bins_x),
-        "predx": edges(df_pred["predx"], bins_x),
-        "truey": edges(df_pred["truey"], bins_y),
-        "predy": edges(df_pred["predy"], bins_y),
-        "truez": edges(df_pred["truez"], bins_z),
-        "predz": edges(df_pred["predz"], bins_z),
-        "dr": edges(pd.Series(dr), bins_r),
-        "total_signal": edges(df_pred["total_signal"], bins_signal),
-        "log_total_signal": edges(df_pred["log_total_signal"], bins_signal),
-    }
-    return binnings
+    edges = _edges_log10(indep, bins) if var == "total_signal" else _edges_linear(indep, bins)
+
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    ib = np.clip(np.digitize(indep, edges) - 1, 0, len(edges) - 2)
+
+    def moments_per_bin(vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        s = np.zeros(len(edges) - 1); s2 = np.zeros(len(edges) - 1); n = np.zeros(len(edges) - 1, dtype=int)
+        for k, v in enumerate(vals):
+            if not np.isfinite(v): continue
+            i = ib[k]; s[i] += v; s2[i] += v*v; n[i] += 1
+        with np.errstate(invalid="ignore", divide="ignore"):
+            mu = np.where(n > 0, s / n, np.nan)
+            varr = np.where(n > 0, s2 / n - mu * mu, np.nan)
+            sig = np.sqrt(np.where(varr >= 0, varr, np.nan))
+        return mu, sig
+
+    dx_mu, dx_sig = moments_per_bin(dx)
+    dy_mu, dy_sig = moments_per_bin(dy)
+    dz_mu, dz_sig = moments_per_bin(dz)
+    dr_mu, dr_sig = moments_per_bin(dr)
+
+    return pd.DataFrame({
+        "bin_x": centers.astype(float),
+        "dx_mu": dx_mu, "dx_sig": dx_sig,
+        "dy_mu": dy_mu, "dy_sig": dy_sig,
+        "dz_mu": dz_mu, "dz_sig": dz_sig,
+        "dr_mu": dr_mu, "dr_sig": dr_sig,
+    })
 
 
-def maybe_plot_heatmaps(
-    stats: Dict[str, pd.DataFrame],
-    title_prefix: str = "",
-    save_dir: Optional[Path] = None,
-    save_plots: bool = False,
+# ---------- Heatmaps (correct axes + RED quantiles) ----------
+
+def plot_heatmap(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    title: str,
+    xlabel: str,
+    ylabel: str,
+    xrange: np.ndarray,
+    yrange: np.ndarray,
+    figsize=(6, 5),
+    cmap="viridis",
+    x_log: bool = False,
+    show=False,
+    return_fig=False,
+):
+    """
+    Plot a single 2D histogram (heatmap) of df[x_col] vs df[y_col].
+    xrange and yrange are arrays of bin edges.
+    If x_log is True, set a logarithmic x-axis (edges should already be log-spaced).
+    """
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    h = ax.hist2d(df[x_col], df[y_col], bins=[xrange, yrange], cmap=cmap)
+    plt.colorbar(h[3], ax=ax, label="Counts")
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if x_log:
+        ax.set_xscale("log")
+
+    # Quantiles per x-bin (left edges for step alignment)
+    x_left_edges = xrange[:-1]
+    y_upper, y_centre, y_lower = [], [], []
+    for j in range(len(xrange) - 1):
+        mask = (df[x_col] >= xrange[j]) & (df[x_col] < xrange[j + 1])
+        yvals = df.loc[mask, y_col]
+        if len(yvals) > 0:
+            y_upper.append(np.nanquantile(yvals, 0.84))
+            y_centre.append(np.nanquantile(yvals, 0.5))
+            y_lower.append(np.nanquantile(yvals, 0.16))
+        else:
+            y_upper.append(np.nan); y_centre.append(np.nan); y_lower.append(np.nan)
+
+    # RED quantile overlays
+    ax.step(x_left_edges, y_upper, color="red", linestyle="--", linewidth=1.2, where="post", label="68% band")
+    ax.step(x_left_edges, y_centre, color="red", linestyle=":",  linewidth=1.2, where="post", label="Median")
+    ax.step(x_left_edges, y_lower, color="red", linestyle="--", linewidth=1.2, where="post")
+
+    plt.tight_layout()
+
+    if show:
+        plt.show()
+    if return_fig:
+        return fig, ax
+    return None
+
+
+def plot_heatmaps_resid_vs_vars(
+    df_pred: pd.DataFrame, outdir: Path, vars_list: List[str], bins_map: Dict[str, int]
 ) -> None:
-    try:
-        import matplotlib.pyplot as plt
-    except Exception:
-        warnings.warn("matplotlib not available; skipping heatmap plots")
-        return
+    """
+    For each residual in {dx,dy,dz,dr} and each var in vars_list,
+    draw heatmap: x = var, y = residual.
+    - total_signal uses log10-spaced bins + log x-axis
+    """
+    import matplotlib.pyplot as plt
 
-    # 'edges' key is only metadata; skip it
-    for key, df in stats.items():
-        if key == "edges":
-            continue
-        for field in ("mu", "sigma"):
-            pivot = df.pivot(index="bin_x_center", columns="bin_z_center", values=field)
-            plt.figure(figsize=(6, 5))
-            im = plt.imshow(
-                pivot.values, aspect="auto", origin="lower",
-                extent=[pivot.columns.min(), pivot.columns.max(),
-                        pivot.index.min(), pivot.index.max()]
+    dx = (df_pred["predx"] - df_pred["truex"]).astype(float)
+    dy = (df_pred["predy"] - df_pred["truey"]).astype(float)
+    dz = (df_pred["predz"] - df_pred["truez"]).astype(float)
+    dr = np.sqrt(dx**2 + dy**2 + dz**2)
+    r_true = np.sqrt(df_pred["truex"]**2 + df_pred["truey"]**2 + df_pred["truez"]**2).astype(float)
+    df_diag = pd.DataFrame({"dx": dx, "dy": dy, "dz": dz, "dr": dr, "r": r_true})
+
+    for var in vars_list:
+        if var == "r":
+            x_vals = r_true.values
+        elif var == "total_signal":
+            x_vals = df_pred["total_signal"].to_numpy(dtype=float)
+        else:
+            x_vals = df_pred[var].to_numpy(dtype=float)
+
+        bins = bins_map.get(var, 24)
+        if var == "total_signal":
+            x_edges = _edges_log10(x_vals, bins)
+            x_log = True
+        else:
+            x_edges = _edges_linear(x_vals, bins)
+            x_log = False
+
+        for resid in ["dx", "dy", "dz", "dr"]:
+            yy = df_diag[resid].to_numpy(dtype=float)
+            finite = np.isfinite(yy)
+            if finite.sum() == 0:
+                y_edges = np.linspace(-1.0, 1.0, 60)
+            else:
+                q16, q84 = np.nanquantile(yy[finite], [0.16, 0.84])
+                span = max(abs(q16), abs(q84))
+                lo, hi = -1.5 * span, 1.5 * span
+                if lo == hi:
+                    lo, hi = lo - 1.0, hi + 1.0
+                y_edges = np.linspace(lo, hi, 60)
+
+            tmp = pd.DataFrame({var: x_vals, resid: df_diag[resid]})
+            fig_ax = plot_heatmap(
+                tmp,
+                x_col=var,
+                y_col=resid,
+                title=f"{resid} vs {var}",
+                xlabel=var,
+                ylabel=resid,
+                xrange=x_edges,
+                yrange=y_edges,
+                figsize=(7, 5),
+                cmap="viridis",
+                x_log=x_log,
+                show=False,
+                return_fig=True,
             )
-            plt.xlabel("Z bin center (mm)")
-            plt.ylabel("X bin center (mm)")
-            plt.title(f"{title_prefix}{key} — {field}")
-            plt.colorbar(im)
-            if save_dir and save_plots:
-                out = save_dir / f"heatmap_{key}_{field}.png"
-                plt.savefig(out, dpi=150, bbox_inches="tight")
-            plt.close()
+            fig, ax = fig_ax if fig_ax is not None else (None, None)
+            if fig is not None:
+                fig.savefig(outdir / f"heatmap_{resid}_vs_{var}.png", dpi=150)
+                plt.close(fig)
 
+
+def plot_pred_vs_true_xyz(df_pred: pd.DataFrame, outdir: Path, bins_map: Dict[str, int]) -> None:
+    """
+    Plot predx vs truex, predy vs truey, predz vs truez with white dashed y=x.
+    Uses linear, shared edges based on true#.
+    """
+    import matplotlib.pyplot as plt
+
+    pairs = [
+        ("truex", "predx", "x"),
+        ("truey", "predy", "y"),
+        ("truez", "predz", "z"),
+    ]
+
+    for tcol, pcol, label in pairs:
+        bins = bins_map.get(f"true{label}", 24)
+        x_true = df_pred[tcol].to_numpy(dtype=float)
+        x_pred = df_pred[pcol].to_numpy(dtype=float)
+        edges = _edges_linear(x_true, bins)
+
+        fig, ax = plt.subplots(1, 1, figsize=(6.5, 5))
+        h = ax.hist2d(x_true, x_pred, bins=[edges, edges], cmap="viridis")
+        plt.colorbar(h[3], ax=ax, label="Counts")
+        ax.set_title(f"pred{label} vs true{label}")
+        ax.set_xlabel(f"true{label}")
+        ax.set_ylabel(f"pred{label}")
+
+        lo = float(min(edges[0], edges[-1])); hi = float(max(edges[0], edges[-1]))
+        ax.plot([lo, hi], [lo, hi], linestyle="--", color="white", linewidth=1.2, label="y = x")
+        ax.legend(loc="best", framealpha=0.6)
+
+        plt.tight_layout()
+        fig.savefig(outdir / f"heatmap_pred{label}_vs_true{label}.png", dpi=150)
+        plt.close(fig)
+
+
+# ---------- 1D line plots ----------
+
+def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str) -> None:
+    import matplotlib.pyplot as plt
+    # Determine xscale for total_signal
+    xscale = "log" if var in ("total_signal", "log_total_signal") else "linear"
+    if var in ("total_signal", "log_total_signal"):
+        print(f"[plot_1d_curves] xscale for {var}: log")
+    else:
+        print(f"[plot_1d_curves] xscale for {var}: linear")
+
+    fig = plt.figure(figsize=(7, 4))
+    plt.plot(df1d["bin_x"], df1d["dx_mu"], label="dx")
+    plt.plot(df1d["bin_x"], df1d["dy_mu"], label="dy")
+    plt.plot(df1d["bin_x"], df1d["dz_mu"], label="dz")
+    plt.plot(df1d["bin_x"], df1d["dr_mu"], label="dr")
+    plt.xlabel(var); plt.ylabel("μ (mm)")
+    plt.title(f"Residual μ vs {var}")
+    plt.legend(); plt.grid(True, alpha=0.3); fig.tight_layout()
+    if xscale == "log":
+        plt.xscale("log")
+    plt.savefig(outdir / f"plot_1d_{var}_mu.png", dpi=150); plt.close(fig)
+
+    fig = plt.figure(figsize=(7, 4))
+    plt.plot(df1d["bin_x"], df1d["dx_sig"], label="dx")
+    plt.plot(df1d["bin_x"], df1d["dy_sig"], label="dy")
+    plt.plot(df1d["bin_x"], df1d["dz_sig"], label="dz")
+    plt.plot(df1d["bin_x"], df1d["dr_sig"], label="dr")
+    plt.xlabel(var); plt.ylabel("σ (mm)")
+    plt.title(f"Residual σ vs {var}")
+    plt.legend(); plt.grid(True, alpha=0.3); fig.tight_layout()
+    if xscale == "log":
+        plt.xscale("log")
+    plt.savefig(outdir / f"plot_1d_{var}_sig.png", dpi=150); plt.close(fig)
+
+
+# ------------------------------ CLI ------------------------------
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Analytic spatial reconstruction with differential residual stats + binnings")
+    p = argparse.ArgumentParser(description="Analytic reconstruction with correct heatmaps + 1D exports/plots")
     p.add_argument("input_csv", type=Path, help="Processed CSV with truth and det_*_max columns")
     p.add_argument("--geom-csv", type=Path, default=Path("../lrs_sanity_check/geom_files/light_module_desc-4.0.0.csv"),
                    help="Geometry CSV describing detectors")
@@ -363,67 +444,93 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     p.add_argument("--tag", type=str, default=None, help="Optional tag appended to output directory name")
     p.add_argument("--outdir", type=Path, default=None, help="Explicit output base directory (overrides input dir use)")
 
-    # Unweighted (no PDE scaling) toggle
+    # Weighting toggle
     p.add_argument("--uw", action="store_true",
                    help="Use UNWEIGHTED amplitudes (do NOT scale by 1/PDE). If omitted, amplitudes are scaled by 1/PDE.")
 
-    # Differential stats controls
-    p.add_argument("--bins-x", type=int, default=24, help="Bins for X(-axis and x-related exports)")
-    p.add_argument("--bins-y", type=int, default=24, help="Bins for Y-related exports")
-    p.add_argument("--bins-z", type=int, default=24, help="Bins for Z(-axis and z-related exports)")
-    p.add_argument("--bins-r", type=int, default=24, help="Bins for residual radius dr")
-    p.add_argument("--bins-signal", type=int, default=24, help="Bins for total_signal/log_total_signal")
-    p.add_argument("--bin-x-axis", type=str, default="truex", choices=["truex", "predx"],
-                   help="X-axis for heatmap binning (default: truex)")
-    p.add_argument("--bin-z-axis", type=str, default="truez", choices=["truez", "predz"],
-                   help="Z-axis for heatmap binning (default: truez)")
-    p.add_argument("--export-stats", action="store_true",
-                   help="Write CSV tables for binned μ/σ (dx,dy,dz,dr) AND a binnings.json with all bin edges.")
-    p.add_argument("--plots", action="store_true", help="Render heatmap images of μ/σ (not saved unless --save-plots).")
-    p.add_argument("--save-plots", action="store_true", help="Write heatmap images (requires --plots).")
+    # 1D exports
+    p.add_argument("--export-1d-over", nargs="*", default=[],
+                   help="Export 1D residual stats over listed variables "
+                        "(choose from: truex truey truez predx predy predz total_signal log_total_signal dr tot_signal r)")
+    p.add_argument("--export-1d-all", action="store_true",
+                   help="Export 1D residuals for: truex truey truez dr total_signal")
+
+    # Bin counts
+    p.add_argument("--bins-x", type=int, default=24, help="Bins for x-like variables (truex/predx)")
+    p.add_argument("--bins-y", type=int, default=24, help="Bins for y-like variables (truey/predy)")
+    p.add_argument("--bins-z", type=int, default=24, help="Bins for z-like variables (truez/predz)")
+    p.add_argument("--bins-r", type=int, default=24, help="Bins for radius r and residual radius dr")
+    p.add_argument("--bins-signal", type=int, default=24, help="Bins for total_signal/log_total_signal (log10-spaced for total_signal)")
+
+    # Plotting (AUTO)
+    p.add_argument("--plot-2d-heatmaps", action="store_true",
+                   help="Auto-generate heatmaps: residual (y) vs each of truex,truey,truez,r,total_signal (log10 bins for total_signal) and also predx/predy/predz vs truex/truey/truez with y=x overlay.")
+    p.add_argument("--plot-1d-over", nargs="*", default=[],
+                   help="Save 1D line plots of μ and σ vs the listed variables (same options as --export-1d-over).")
+    p.add_argument("--plot-1d-all", action="store_true",
+                   help="Save 1D plots for: truex truey truez dr total_signal")
 
     return p.parse_args(argv)
 
 
+# ------------------------------ Main ------------------------------
+
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
 
-    # columns expected from input
     x_cols = [f"det_{i}_max" for i in range(16)]
 
-    # Load and sanitize CSV
     df, det_cols_present = sanitize_and_load_csv(args.input_csv, x_cols)
 
-    # Load geometry + build detector positions
-    df_geom = load_geom_csv(str(args.geom_csv))
+    # Load geometry files
+    df_geom = load_geom_csv(args.geom_csv)
     df_geom["mod"] = df_geom["TPC"] // 2
-    mod_bounds_mm, _max_drift_distance = load_hdf_geometry(args.hdf5)
+    geom_data = load_geom_yaml(args.geom_yaml)
+
+    # Extract module bounds and build TPC bounds for transforms
+    mod_bounds_mm, max_drift_distance = load_hdf_geometry(args.hdf5)
     module_centres = compute_module_centres(mod_bounds_mm)
-    geom_data = load_geom_yaml(str(args.geom_yaml))
 
-    # Annotate offsets
-    for idx, row in df_geom.iterrows():
-        det_num = int(row["Detector"]); tpc_num = int(row["TPC"]); mod_num = int(row["mod"])
-        tco = geom_data["tpc_center_offset"][tpc_num]
-        dc = geom_data["det_center"][det_num]
-        df_geom.at[idx, "x_offset"] = dc[0] + tco[0] + module_centres[mod_num][0]
-        df_geom.at[idx, "y_offset"] = dc[1] + tco[1] + module_centres[mod_num][1]
-        df_geom.at[idx, "z_offset"] = dc[2] + tco[2] + module_centres[mod_num][2]
+    # Build TPC bounds array (needed for coordinate transform)
+    # Each module has 2 TPCs (drift regions)
+    tpc_bounds = []
+    for mod in mod_bounds_mm:
+        x_min, x_max = float(mod[0][0]), float(mod[1][0])
+        y_min, y_max = float(mod[0][1]), float(mod[1][1])
+        z_min, z_max = float(mod[0][2]), float(mod[1][2])
+        x_min_adj = x_max - max_drift_distance
+        x_max_adj = x_min + max_drift_distance
+        tpc_bounds.append(((x_min_adj, y_min, z_min), (x_max, y_max, z_max)))
+        tpc_bounds.append(((x_min, y_min, z_min), (x_max_adj, y_max, z_max)))
+    tpc_bounds_mm = np.array(tpc_bounds, dtype=float)
 
-    det_pos_x, det_pos_y, det_pos_z = build_detector_positions(df_geom)
+    # Compute alignment parameters (SAME as used for event data in process_light_outputs.py)
+    print("Computing coordinate transform parameters...")
+    params = compute_align_params(tpc_bounds_mm)
+    print(f"  x_diff={params.x_diff:.2f}, x_midway={params.x_midway:.2f}, z_diff={params.z_diff:.2f}")
 
-    # Per-detector PDE efficiencies (TrapType heuristic fallback)
-    eff_list = []
-    for d in range(16):
-        subset = df_geom.loc[df_geom["Detector"] == d]
-        if not subset.empty and "TrapType" in subset.columns:
-            eff = 0.006 if int(subset["TrapType"].values[0]) != 0 else 0.002
-        else:
-            eff = 0.006
-        eff_list.append(eff)
-    eff_per_det = np.array(eff_list, dtype=float)
+    # Compute detector offsets in UNTRANSFORMED coordinates
+    df_geom = compute_detector_offsets(df_geom, module_centres, geom_data)
 
-    # Predictions (names are predx/predy/predz, regardless of weighting)
+    # CRITICAL: Transform detector geometry to common frame (same transform as events!)
+    print("Transforming detector geometry to common frame...")
+    df_geom_transformed = transform_geom(
+        df_geom,
+        params,
+        x_col="x_offset",
+        y_col="y_offset",
+        z_col="z_offset"
+    )
+
+    # Aggregate transformed detector positions
+    det_pos_x, det_pos_y, det_pos_z = detector_means_by_id(df_geom_transformed)
+    print(f"Detector positions (transformed): x=[{det_pos_x.min():.1f}, {det_pos_x.max():.1f}], "
+          f"y=[{det_pos_y.min():.1f}, {det_pos_y.max():.1f}], "
+          f"z=[{det_pos_z.min():.1f}, {det_pos_z.max():.1f}]")
+
+    # Extract PDE values systematically
+    eff_per_det = extract_pde_per_detector(df_geom)
+
     df_pred = compute_predictions(
         df=df,
         det_cols=det_cols_present,
@@ -434,36 +541,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         eff_per_det=eff_per_det,
     )
 
-    # Differential (binned) residual stats — always computed in-memory
-    stats = compute_differential_stats(
-        df_pred=df_pred,
-        x_axis=args.bin_x_axis,
-        z_axis=args.bin_z_axis,
-        bins_x=args.bins_x,
-        bins_z=args.bins_z,
+    need_outdir = bool(
+        args.save or args.export_1d_over or args.export_1d_all or
+        args.plot_2d_heatmaps or args.plot_1d_over or args.plot_1d_all
     )
-
-    # Optionally plot heatmaps
-    if args.plots:
-        # If saving plots is requested, ensure we have an outdir
-        save_dir = None
-        if args.save_plots or args.export_stats or args.save:
-            mode_tag = "uw" if args.uw else "pde"
-            save_dir = ensure_outdir_for_artifacts(args, mode_tag)
-        maybe_plot_heatmaps(
-            stats,
-            title_prefix=("UW " if args.uw else "PDE ") + f"({args.bin_x_axis} vs {args.bin_z_axis}) ",
-            save_dir=save_dir,
-            save_plots=args.save_plots,
-        )
-
     outdir: Optional[Path] = None
-    need_outdir = bool(args.save or args.export_stats or (args.plots and args.save_plots))
     if need_outdir:
         mode_tag = "uw" if args.uw else "pde"
-        outdir = ensure_outdir_for_artifacts(args, mode_tag)
+        outdir = ensure_outdir(args, mode_tag)
 
-    # Save ONLY predictions if requested
     if args.save and outdir is not None:
         out_df = df_pred[["predx", "predy", "predz"]].copy()
         out_path = outdir / "predictions.csv.gz"
@@ -483,40 +569,67 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         with open(outdir / "manifest.json", "w") as f:
             json.dump(meta, f, indent=2)
 
-    # Export heatmap stats + binnings
-    if args.export_stats and outdir is not None:
-        # 1) heatmap stats (dx,dy,dz,dr)
-        for key, df_stat in stats.items():
-            if key == "edges":
-                continue
-            path = outdir / f"differential_{key}.csv.gz"
-            df_stat.to_csv(path, index=False, compression="gzip")
+    export_vars = list(args.export_1d_over)
+    plot1d_vars = list(args.plot_1d_over)
+    if args.export_1d_all:
+        export_vars = sorted(set(export_vars + DEFAULT_1D_VARS), key=lambda v: DEFAULT_1D_VARS.index(v) if v in DEFAULT_1D_VARS else 99)
+    if args.plot_1d_all:
+        plot1d_vars = sorted(set(plot1d_vars + DEFAULT_1D_VARS), key=lambda v: DEFAULT_1D_VARS.index(v) if v in DEFAULT_1D_VARS else 99)
+
+    def choose_bins(var: str) -> int:
+        m = {
+            "truex": args.bins_x, "predx": args.bins_x,
+            "truey": args.bins_y, "predy": args.bins_y,
+            "truez": args.bins_z, "predz": args.bins_z,
+            "r": args.bins_r, "dr": args.bins_r,
+            "total_signal": args.bins_signal, "log_total_signal": args.bins_signal,
+            "tot_signal": args.bins_signal,
+        }
+        return m.get(var, args.bins_x)
+
+    if export_vars:
+        if outdir is None:
+            mode_tag = "uw" if args.uw else "pde"
+            outdir = ensure_outdir(args, mode_tag)
+        for var in export_vars:
+            if var == "tot_signal":
+                var = "total_signal"
+            bins = choose_bins(var)
+            df1d = compute_differential_stats_1d_minimal(df_pred, var=var, bins=bins)
+            fname = f"resids_f_{var}.csv.gz"
+            path = outdir / fname
+            df1d.to_csv(path, index=False, compression="gzip")
             print("Wrote:", path)
 
-        # 2) binnings.json — bin edges for true/pred (x,y,z), dr, total_signal, log_total_signal
-        binnings = build_binnings_json(
-            df_pred=df_pred,
-            bins_x=args.bins_x,
-            bins_y=args.bins_y,
-            bins_z=args.bins_z,
-            bins_r=args.bins_r,
-            bins_signal=args.bins_signal,
-        )
-
-        # include the actual heatmap (x,z) edges that were used
-        binnings["_heatmap_axes"] = {
-            "x_axis": args.bin_x_axis,
-            "z_axis": args.bin_z_axis,
-            "edges_x_used": stats["edges"]["bx"],
-            "edges_z_used": stats["edges"]["bz"],
+    if args.plot_2d_heatmaps:
+        if outdir is None:
+            mode_tag = "uw" if args.uw else "pde"
+            outdir = ensure_outdir(args, mode_tag)
+        bins_map = {
+            "truex": args.bins_x,
+            "truey": args.bins_y,
+            "truez": args.bins_z,
+            "r": args.bins_r,
+            "total_signal": args.bins_signal,  # log10-spaced inside plotting
         }
+        # residual vs variable heatmaps
+        plot_heatmaps_resid_vs_vars(df_pred, outdir=outdir, vars_list=HEATMAP_INDEP_VARS, bins_map=bins_map)
+        # additional pred vs true for x,y,z
+        bins_map_xyz = {"truex": args.bins_x, "truey": args.bins_y, "truez": args.bins_z}
+        plot_pred_vs_true_xyz(df_pred, outdir=outdir, bins_map=bins_map_xyz)
 
-        with open(outdir / "binnings.json", "w") as f:
-            json.dump(binnings, f, indent=2)
-        print("Wrote:", outdir / "binnings.json")
+    if plot1d_vars:
+        if outdir is None:
+            mode_tag = "uw" if args.uw else "pde"
+            outdir = ensure_outdir(args, mode_tag)
+        for var in plot1d_vars:
+            if var == "tot_signal":
+                var = "total_signal"
+            bins = choose_bins(var)
+            df1d = compute_differential_stats_1d_minimal(df_pred, var=var, bins=bins)
+            plot_1d_curves(df1d, outdir=outdir, var=var)
 
-    # Always print a tiny preview
-    print("Sample predictions (first 5):")
+    print("Sample predictions (first 5 rows):")
     print(df_pred[["predx", "predy", "predz"]].head(5).to_string(index=False))
 
     return 0

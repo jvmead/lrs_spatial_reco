@@ -18,11 +18,15 @@ from pathlib import Path
 import argparse
 import logging
 import time
+import json
 
 import numpy as np
 import pandas as pd
 import h5py
 import matplotlib.pyplot as plt
+
+# Import transform utilities
+from utils import transform_positions as utils_transform_positions
 
 
 def load_or_build_tpc_bounds(out_geom_dir: Path, fallback_hdf5: Path) -> np.ndarray:
@@ -55,49 +59,21 @@ def transform_positions(df: pd.DataFrame,
                         x_col: str,
                         y_col: str,
                         z_col: str) -> pd.DataFrame:
-    df = df.copy()
-    # compute x diff and midpoint from tpc_bounds
-    tpc_x = tpc_bounds_mm[:, :, 0]
-    # flatten unique sorted values
-    unique_x = np.unique(tpc_x.flatten())
-    # find negative and non-negative minima
-    neg_vals = unique_x[unique_x <= 0]
-    pos_vals = unique_x[unique_x >= 0]
-    if neg_vals.size == 0 or pos_vals.size < 3:
-        raise RuntimeError("Unexpected TPC x bounds; cannot compute transforms.")
-    xneg = neg_vals.min()
-    xmin = pos_vals.min()
-    x_diff = xmin - xneg
-    # second & third smallest non-negative for midpoint (preserves original logic)
-    x_sorted_pos = np.sort(pos_vals)
-    x_second_min = x_sorted_pos[1]
-    x_third_min = x_sorted_pos[2]
-    x_midway = (x_second_min + x_third_min) / 2.0
-
-    # vectorized x transform: shift negatives, then reflect above midpoint
-    xvals = df[x_col].to_numpy(dtype=float)
-    x_shifted = np.where(xvals < 0, xvals + x_diff, xvals)
-    x_true = np.where(x_shifted > x_midway, 2.0 * x_midway - x_shifted, x_shifted)
-    df["xtrue"] = x_true
-
-    # z transform: align negative/positive using tpc z bounds
-    tpc_z = tpc_bounds_mm[:, :, 2]
-    unique_z = np.unique(tpc_z.flatten())
-    z_neg_vals = unique_z[unique_z <= 0]
-    z_pos_vals = unique_z[unique_z >= 0]
-    if z_neg_vals.size == 0 or z_pos_vals.size == 0:
-        raise RuntimeError("Unexpected TPC z bounds; cannot compute z transform.")
-    zneg = z_neg_vals.min()
-    zmin = z_pos_vals.min()
-    z_diff = zmin - zneg
-    zvals = df[z_col].to_numpy(dtype=float)
-    z_true = np.where(zvals < 0, zvals + z_diff, zvals)
-    df["ztrue"] = z_true
-
-    # copy y through (no transform in original code)
-    df["ytrue"] = df[y_col].to_numpy(dtype=float)
-
-    return df
+    """
+    LEGACY WRAPPER: Calls utils.transform_positions() for consistency.
+    Kept for backward compatibility but delegates to the canonical implementation.
+    """
+    return utils_transform_positions(
+        df=df,
+        tpc_bounds_mm=tpc_bounds_mm,
+        x_col=x_col,
+        y_col=y_col,
+        z_col=z_col,
+        out_x="truex",
+        out_y="truey",
+        out_z="truez",
+        return_params=False,
+    )
 
 
 def make_histograms(df: pd.DataFrame,
@@ -109,7 +85,7 @@ def make_histograms(df: pd.DataFrame,
     fig, axes = plt.subplots(1, 3, figsize=(12, 3))
     xbins = np.linspace(-75, 75, 150)
     axes[0].hist(df[x_col], bins=xbins, alpha=0.5, color="red", label="orig")
-    axes[0].hist(df["xtrue"], bins=xbins, alpha=0.5, color="orange", label="transformed")
+    axes[0].hist(df["truex"], bins=xbins, alpha=0.5, color="orange", label="transformed")
     axes[0].set_title("X")
     for bounds in tpc_bounds_mm:
         axes[0].axvline(bounds[0][0], color="k", linestyle="--", alpha=0.5)
@@ -124,7 +100,7 @@ def make_histograms(df: pd.DataFrame,
 
     zbins = np.linspace(-75, 75, 150)
     axes[2].hist(df[z_col], bins=zbins, alpha=0.5, color="blue", label="orig")
-    axes[2].hist(df["ztrue"], bins=zbins, alpha=0.5, color="cyan", label="transformed")
+    axes[2].hist(df["truez"], bins=zbins, alpha=0.5, color="cyan", label="transformed")
     axes[2].set_title("Z")
     for bounds in tpc_bounds_mm:
         axes[2].axvline(bounds[0][2], color="k", linestyle="--", alpha=0.5)
@@ -219,6 +195,22 @@ def main():
         out_plot = out_dir / "true_position_histograms.png"
         make_histograms(df_new, tpc_bounds_mm, x_col, y_col, z_col, out_plot)
         logging.info("Wrote histogram: %s", out_plot)
+
+    # save inputs to json for record-keeping
+    inputs_record = {
+        "n": n,
+        "input_path": str(input_path),
+        "match_filename": str(match_filename),
+        "out_base": str(args.out_base),
+        "fallback_hdf5": str(args.fallback_hdf5),
+        "nint1": args.nint1,
+        "mod123": args.mod123,
+        "dE_weight": args.dE_weight,
+        "no_plots": not args.print_plots,
+    }
+    with open(out_dir / "processing_inputs.json", "w") as f:
+        json.dump(inputs_record, f, indent=4)
+    logging.info("Wrote processing inputs record.")
 
 
 if __name__ == "__main__":
