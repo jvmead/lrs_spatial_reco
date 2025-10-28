@@ -38,6 +38,11 @@ from utils import (
     compute_module_centres,
     compute_detector_offsets,
     extract_pde_per_detector,
+    compute_differential_stats_1d_minimal,
+    plot_heatmap,
+    plot_heatmaps_resid_vs_vars,
+    plot_pred_vs_true_xyz,
+    plot_1d_curves,
 )
 
 
