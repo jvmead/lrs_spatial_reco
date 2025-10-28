@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Analytic reconstruction with:
 - predx/predy/predz computation (names unchanged; --uw only affects directory name)
@@ -54,9 +55,8 @@ from plotting import (
     plot_3d_event_displays,
 )
 
-
 DEFAULT_1D_VARS = ["truex", "truey", "truez", "dr", "total_signal"]
-HEATMAP_INDEP_VARS = ["truex", "truey", "truez", "r", "total_signal"]  # r = true radius
+HEATMAP_INDEP_VARS = ["truex", "truey", "truez", "total_signal"]
 
 
 # ---------- small utils ----------
@@ -383,7 +383,10 @@ def plot_heatmaps_resid_vs_vars(
             )
             fig, ax = fig_ax if fig_ax is not None else (None, None)
             if fig is not None:
-                fig.savefig(outdir / f"heatmap_{resid}_vs_{var}.png", dpi=150)
+                # Create subdirectory for each independent variable
+                heatmaps_var_dir = outdir / "heatmaps" / f"heatmaps_f_{var}"
+                heatmaps_var_dir.mkdir(parents=True, exist_ok=True)
+                fig.savefig(heatmaps_var_dir / f"heatmap_{resid}_vs_{var}.png", dpi=150)
                 plt.close(fig)
 
 
@@ -418,7 +421,9 @@ def plot_pred_vs_true_xyz(df_pred: pd.DataFrame, outdir: Path, bins_map: Dict[st
         ax.legend(loc="best", framealpha=0.6)
 
         plt.tight_layout()
-        fig.savefig(outdir / f"heatmap_pred{label}_vs_true{label}.png", dpi=150)
+        pred_vs_true_dir = outdir / "heatmaps" / "pred_vs_true"
+        pred_vs_true_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(pred_vs_true_dir / f"heatmap_pred{label}_vs_true{label}.png", dpi=150)
         plt.close(fig)
 
 
@@ -475,7 +480,9 @@ def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str, error_style: str 
     plt.legend(); plt.grid(True, alpha=0.3); fig.tight_layout()
     if xscale == "log":
         plt.xscale("log")
-    plt.savefig(outdir / f"plot_1d_{var}_mu.png", dpi=150); plt.close(fig)
+    plots_1d_dir = outdir / "plots_1d"
+    plots_1d_dir.mkdir(exist_ok=True)
+    plt.savefig(plots_1d_dir / f"plot_1d_{var}_mu.png", dpi=150); plt.close(fig)
 
     # Plot sigma (standard deviations)
     fig = plt.figure(figsize=(7, 4))
@@ -511,7 +518,9 @@ def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str, error_style: str 
     ylims = plt.ylim()
     if ylims[0] < 0:
         plt.ylim(0, ylims[1])
-    plt.savefig(outdir / f"plot_1d_{var}_sig.png", dpi=150); plt.close(fig)
+    plots_1d_dir = outdir / "plots_1d"
+    plots_1d_dir.mkdir(exist_ok=True)
+    plt.savefig(plots_1d_dir / f"plot_1d_{var}_sig.png", dpi=150); plt.close(fig)
 
 
 # ------------------------------ CLI ------------------------------
@@ -647,7 +656,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     if args.save and outdir is not None:
         out_df = df_pred[["predx", "predy", "predz"]].copy()
-        out_path = outdir / "predictions.csv.gz"
+        predictions_dir = outdir / "predictions"
+        predictions_dir.mkdir(exist_ok=True)
+        out_path = predictions_dir / "predictions.csv.gz"
         out_df.to_csv(out_path, index=False, compression="gzip")
         print("Wrote:", out_path)
 
@@ -686,13 +697,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if outdir is None:
             mode_tag = "uw" if args.uw else "pde"
             outdir = ensure_outdir(args, mode_tag)
+        residuals_dir = outdir / "residuals_1d"
+        residuals_dir.mkdir(exist_ok=True)
         for var in export_vars:
             if var == "tot_signal":
                 var = "total_signal"
             bins = choose_bins(var)
             df1d = compute_differential_stats_1d_minimal(df_pred, var=var, bins=bins)
             fname = f"resids_f_{var}.csv.gz"
-            path = outdir / fname
+            path = residuals_dir / fname
             df1d.to_csv(path, index=False, compression="gzip")
             print("Wrote:", path)
 

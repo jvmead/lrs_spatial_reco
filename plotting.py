@@ -763,6 +763,8 @@ def plot_3d_event_displays(
             ax_zy.set_aspect('equal')
             ax_zy.grid(True, alpha=0.3)
 
-        fig.savefig(outdir / f"event_display_3d_{metric_name}.png", dpi=150, bbox_inches='tight')
+        event_displays_dir = outdir / "event_displays_3d"
+        event_displays_dir.mkdir(exist_ok=True)
+        fig.savefig(event_displays_dir / f"event_display_3d_{metric_name}.png", dpi=150, bbox_inches='tight')
         plt.close(fig)
 
