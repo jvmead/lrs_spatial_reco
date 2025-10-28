@@ -10,7 +10,7 @@ Features:
  - Logging instead of prints
 
  Example usage:
- python process_light_outputs.py --n 100 --nint1 --mod123 --dE-weight --no-plots
+ python process_light_outputs.py --n 100 --nint1 --mod123 --dE-weight
 
  """
 
@@ -25,11 +25,22 @@ import pandas as pd
 import h5py
 import matplotlib.pyplot as plt
 
-# Import transform utilities
-from utils import transform_positions as utils_transform_positions
+# Import transform and plotting utilities
+from utils import (
+    transform_positions as utils_transform_positions,
+    compute_align_params,
+    transform_geom,
+    load_geom_csv,
+    compute_detector_offsets,
+    load_hdf_geometry,
+    compute_module_centres,
+)
+from plotting import plot_spatial_distributions, plot_3d_event_displays
 
 
-def load_or_build_tpc_bounds(out_geom_dir: Path, fallback_hdf5: Path) -> np.ndarray:
+def load_or_build_tpc_bounds(out_geom_dir, fallback_hdf5):
+    # type: (Path, Path) -> np.ndarray
+    """Load or build TPC bounds array [cm units despite 'mm' in filename]."""
     out_geom_dir.mkdir(parents=True, exist_ok=True)
     tpc_path = out_geom_dir / "tpc_bounds_mm.npy"
     if tpc_path.exists():
@@ -76,43 +87,6 @@ def transform_positions(df: pd.DataFrame,
     )
 
 
-def make_histograms(df: pd.DataFrame,
-                    tpc_bounds_mm: np.ndarray,
-                    x_col: str,
-                    y_col: str,
-                    z_col: str,
-                    out_file: Path) -> None:
-    fig, axes = plt.subplots(1, 3, figsize=(12, 3))
-    xbins = np.linspace(-75, 75, 150)
-    axes[0].hist(df[x_col], bins=xbins, alpha=0.5, color="red", label="orig")
-    axes[0].hist(df["truex"], bins=xbins, alpha=0.5, color="orange", label="transformed")
-    axes[0].set_title("X")
-    for bounds in tpc_bounds_mm:
-        axes[0].axvline(bounds[0][0], color="k", linestyle="--", alpha=0.5)
-        axes[0].axvline(bounds[1][0], color="k", linestyle="--", alpha=0.5)
-
-    ybins = np.linspace(-75, 75, 150)
-    axes[1].hist(df[y_col], bins=ybins, alpha=0.5, color="green")
-    axes[1].set_title("Y")
-    for bounds in tpc_bounds_mm:
-        axes[1].axvline(bounds[0][1], color="k", linestyle="--", alpha=0.5)
-        axes[1].axvline(bounds[1][1], color="k", linestyle="--", alpha=0.5)
-
-    zbins = np.linspace(-75, 75, 150)
-    axes[2].hist(df[z_col], bins=zbins, alpha=0.5, color="blue", label="orig")
-    axes[2].hist(df["truez"], bins=zbins, alpha=0.5, color="cyan", label="transformed")
-    axes[2].set_title("Z")
-    for bounds in tpc_bounds_mm:
-        axes[2].axvline(bounds[0][2], color="k", linestyle="--", alpha=0.5)
-        axes[2].axvline(bounds[1][2], color="k", linestyle="--", alpha=0.5)
-
-    for ax in axes:
-        ax.legend()
-    plt.tight_layout()
-    fig.savefig(out_file)
-    plt.close(fig)
-
-
 def build_output_dir(base: Path, n: int, nint1: bool, mod123: bool, dE_weight: bool) -> Path:
     name = f"processed_outputs_n{n}"
     if nint1:
@@ -142,6 +116,9 @@ def parse_args():
     p.add_argument("--mod123", action="store_true")
     p.add_argument("--dE-weight", dest="dE_weight", action="store_true")
     p.add_argument("--no-plots", dest="print_plots", action="store_false")
+    p.add_argument("--geom-csv", type=Path,
+                   default=Path("/global/homes/j/jvmead/dune/lrs_sanity_check/geom_files/light_module_desc-4.0.0.csv"),
+                   help="Path to detector geometry CSV")
     return p.parse_args()
 
 
@@ -186,15 +163,91 @@ def main():
 
     df_new = transform_positions(df, tpc_bounds_mm, x_col, y_col, z_col)
 
+    # Compute total_signal from detector amplitudes if det_#_max columns exist
+    det_cols = [f"det_{i}_max" for i in range(16)]
+    if all(col in df_new.columns for col in det_cols):
+        df_new["total_signal"] = df_new[det_cols].sum(axis=1)
+        logging.info("Computed total_signal from detector amplitudes")
+    else:
+        logging.warning("Not all det_#_max columns found; skipping total_signal computation")
+
     # save processed CSV
     out_csv = out_dir / "truth_reco_processed.csv"
     df_new.to_csv(out_csv, index=False)
     logging.info("Wrote processed CSV: %s", out_csv)
 
     if args.print_plots:
-        out_plot = out_dir / "true_position_histograms.png"
-        make_histograms(df_new, tpc_bounds_mm, x_col, y_col, z_col, out_plot)
+        # Determine if total_signal exists for appropriate filename
+        has_total_signal = "total_signal" in df_new.columns
+        plot_name = "input_distributions.png"
+        out_plot = out_dir / plot_name
+
+        # Use generalized plotting function with original x/y/z columns and transformed truex/truey/truez
+        plot_spatial_distributions(
+            df=df_new,
+            x_true_col=x_col,
+            y_true_col=y_col,
+            z_true_col=z_col,
+            x_pred_col="truex",
+            y_pred_col="truey",
+            z_pred_col="truez",
+            tpc_bounds_mm=tpc_bounds_mm,
+            include_log_signal=True,
+            out_file=out_plot,
+            title_prefix="",
+            label_true="raw",
+            label_pred="tsfm",
+        )
         logging.info("Wrote histogram: %s", out_plot)
+
+        # Generate 3D event displays for min, median, max total_signal
+        if has_total_signal:
+            logging.info("Generating 3D event displays...")
+            # Load and transform detector geometry
+            df_geom = load_geom_csv(args.geom_csv)
+            # Add 'mod' column (module number = TPC // 2)
+            df_geom["mod"] = df_geom["TPC"] // 2
+
+            mod_bounds_mm, _ = load_hdf_geometry(args.fallback_hdf5)
+            module_centres = compute_module_centres(mod_bounds_mm)
+
+            # Load geometry data for offsets
+            import yaml
+            geom_yaml_path = args.geom_csv.parent / (args.geom_csv.stem + ".yaml")
+            if geom_yaml_path.exists():
+                with open(geom_yaml_path, 'r') as f:
+                    geom_data = yaml.safe_load(f)
+            else:
+                logging.warning(f"YAML geometry file not found: {geom_yaml_path}, using empty dict")
+                geom_data = {}
+
+            df_geom = compute_detector_offsets(df_geom, module_centres, geom_data)
+
+            # Transform geometry to common frame (overwrite x/y/z_offset columns)
+            align_params = compute_align_params(tpc_bounds_mm)
+            df_geom = transform_geom(df_geom, align_params, "x_offset", "y_offset", "z_offset",
+                                     out_x="x_offset", out_y="y_offset", out_z="z_offset")
+
+            # Select 3 events by total_signal (min, median, max)
+            sorted_by_signal = df_new.sort_values('total_signal')
+            event_indices = [
+                sorted_by_signal.index[0],  # min
+                sorted_by_signal.index[len(sorted_by_signal) // 2],  # median
+                sorted_by_signal.index[-1],  # max
+            ]
+
+            events_by_metric = {'total_signal': event_indices}
+
+            plot_3d_event_displays(
+                df=df_new,
+                df_geom=df_geom,
+                tpc_bounds_mm=tpc_bounds_mm,
+                align_params=align_params,
+                events_by_metric=events_by_metric,
+                outdir=out_dir,
+                show_pred=False  # No predictions in preprocessing
+            )
+            logging.info("Wrote 3D event displays to: %s", out_dir)
 
     # save inputs to json for record-keeping
     inputs_record = {

@@ -12,6 +12,9 @@ Analytic reconstruction with:
   * predx vs truex (with white dashed y=x)
   * predy vs truey (with white dashed y=x)
   * predz vs truez (with white dashed y=x)
+
+Example usage:
+python run_analytic_reco.py /path/to/input.csv --outdir /path/to/output --tag mytag
 """
 
 from __future__ import annotations
@@ -38,11 +41,17 @@ from utils import (
     compute_module_centres,
     compute_detector_offsets,
     extract_pde_per_detector,
+)
+
+# Import plotting and diagnostics from plotting module
+from plotting import (
     compute_differential_stats_1d_minimal,
     plot_heatmap,
     plot_heatmaps_resid_vs_vars,
     plot_pred_vs_true_xyz,
     plot_1d_curves,
+    plot_spatial_distributions,
+    plot_3d_event_displays,
 )
 
 
@@ -186,8 +195,10 @@ def compute_differential_stats_1d_minimal(
 ) -> pd.DataFrame:
     """
     Returns:
-      bin_x, dx_mu, dx_sig, dy_mu, dy_sig, dz_mu, dz_sig, dr_mu, dr_sig
+      bin_x, dx_mu, dx_sig, dy_mu, dy_sig, dz_mu, dz_sig, dr_mu, dr_sig,
+      dx_mu_err, dy_mu_err, dz_mu_err, dr_mu_err, dx_sig_err, dy_sig_err, dz_sig_err, dr_sig_err, n_per_bin
     Uses LOG10-SPACED bins when var == 'total_signal'.
+    Error estimates: mu_err = σ/√n, sig_err = σ/√(2n)
     """
     dx, dy, dz, dr = _residual_arrays(df_pred)
 
@@ -208,7 +219,7 @@ def compute_differential_stats_1d_minimal(
     centers = 0.5 * (edges[:-1] + edges[1:])
     ib = np.clip(np.digitize(indep, edges) - 1, 0, len(edges) - 2)
 
-    def moments_per_bin(vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def moments_per_bin(vals: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         s = np.zeros(len(edges) - 1); s2 = np.zeros(len(edges) - 1); n = np.zeros(len(edges) - 1, dtype=int)
         for k, v in enumerate(vals):
             if not np.isfinite(v): continue
@@ -217,12 +228,16 @@ def compute_differential_stats_1d_minimal(
             mu = np.where(n > 0, s / n, np.nan)
             varr = np.where(n > 0, s2 / n - mu * mu, np.nan)
             sig = np.sqrt(np.where(varr >= 0, varr, np.nan))
-        return mu, sig
+            # Standard error of mean: σ/√n
+            mu_err = np.where(n > 1, sig / np.sqrt(n), np.nan)
+            # Standard error of std dev: σ/√(2n)
+            sig_err = np.where(n > 1, sig / np.sqrt(2 * n), np.nan)
+        return mu, sig, mu_err, sig_err, n
 
-    dx_mu, dx_sig = moments_per_bin(dx)
-    dy_mu, dy_sig = moments_per_bin(dy)
-    dz_mu, dz_sig = moments_per_bin(dz)
-    dr_mu, dr_sig = moments_per_bin(dr)
+    dx_mu, dx_sig, dx_mu_err, dx_sig_err, n_dx = moments_per_bin(dx)
+    dy_mu, dy_sig, dy_mu_err, dy_sig_err, n_dy = moments_per_bin(dy)
+    dz_mu, dz_sig, dz_mu_err, dz_sig_err, n_dz = moments_per_bin(dz)
+    dr_mu, dr_sig, dr_mu_err, dr_sig_err, n_dr = moments_per_bin(dr)
 
     return pd.DataFrame({
         "bin_x": centers.astype(float),
@@ -230,6 +245,9 @@ def compute_differential_stats_1d_minimal(
         "dy_mu": dy_mu, "dy_sig": dy_sig,
         "dz_mu": dz_mu, "dz_sig": dz_sig,
         "dr_mu": dr_mu, "dr_sig": dr_sig,
+        "dx_mu_err": dx_mu_err, "dy_mu_err": dy_mu_err, "dz_mu_err": dz_mu_err, "dr_mu_err": dr_mu_err,
+        "dx_sig_err": dx_sig_err, "dy_sig_err": dy_sig_err, "dz_sig_err": dz_sig_err, "dr_sig_err": dr_sig_err,
+        "n_per_bin": n_dx,  # all residuals use same bins, so n should be identical
     })
 
 
@@ -332,12 +350,20 @@ def plot_heatmaps_resid_vs_vars(
             if finite.sum() == 0:
                 y_edges = np.linspace(-1.0, 1.0, 60)
             else:
-                q16, q84 = np.nanquantile(yy[finite], [0.16, 0.84])
-                span = max(abs(q16), abs(q84))
-                lo, hi = -1.5 * span, 1.5 * span
-                if lo == hi:
-                    lo, hi = lo - 1.0, hi + 1.0
-                y_edges = np.linspace(lo, hi, 60)
+                if resid == "dr":
+                    # dr is always non-negative, set minimum to 0
+                    q84 = np.nanquantile(yy[finite], 0.84)
+                    hi = 1.5 * q84
+                    if hi == 0:
+                        hi = 1.0
+                    y_edges = np.linspace(0, hi, 60)
+                else:
+                    q16, q84 = np.nanquantile(yy[finite], [0.16, 0.84])
+                    span = max(abs(q16), abs(q84))
+                    lo, hi = -1.5 * span, 1.5 * span
+                    if lo == hi:
+                        lo, hi = lo - 1.0, hi + 1.0
+                    y_edges = np.linspace(lo, hi, 60)
 
             tmp = pd.DataFrame({var: x_vals, resid: df_diag[resid]})
             fig_ax = plot_heatmap(
@@ -398,7 +424,16 @@ def plot_pred_vs_true_xyz(df_pred: pd.DataFrame, outdir: Path, bins_map: Dict[st
 
 # ---------- 1D line plots ----------
 
-def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str) -> None:
+def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str, error_style: str = "band") -> None:
+    """
+    Plot 1D residual curves (mean and sigma) vs an independent variable.
+
+    Args:
+        df1d: DataFrame with binned statistics
+        outdir: Output directory for plots
+        var: Independent variable name
+        error_style: "band" for fill_between (default), "errorbar" for error bars, "none" for no errors
+    """
     import matplotlib.pyplot as plt
     # Determine xscale for total_signal
     xscale = "log" if var in ("total_signal", "log_total_signal") else "linear"
@@ -407,28 +442,75 @@ def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str) -> None:
     else:
         print(f"[plot_1d_curves] xscale for {var}: linear")
 
+    # Check if error columns exist
+    has_errors = all(col in df1d.columns for col in ["dx_mu_err", "dy_mu_err", "dz_mu_err", "dr_mu_err"])
+
+    # Plot mu (mean residuals)
     fig = plt.figure(figsize=(7, 4))
-    plt.plot(df1d["bin_x"], df1d["dx_mu"], label="dx")
-    plt.plot(df1d["bin_x"], df1d["dy_mu"], label="dy")
-    plt.plot(df1d["bin_x"], df1d["dz_mu"], label="dz")
-    plt.plot(df1d["bin_x"], df1d["dr_mu"], label="dr")
-    plt.xlabel(var); plt.ylabel("μ (mm)")
+    if has_errors and error_style == "errorbar":
+        plt.errorbar(df1d["bin_x"], df1d["dx_mu"], yerr=df1d["dx_mu_err"], label="dx", fmt='o-', capsize=3, markersize=4)
+        plt.errorbar(df1d["bin_x"], df1d["dy_mu"], yerr=df1d["dy_mu_err"], label="dy", fmt='s-', capsize=3, markersize=4)
+        plt.errorbar(df1d["bin_x"], df1d["dz_mu"], yerr=df1d["dz_mu_err"], label="dz", fmt='^-', capsize=3, markersize=4)
+        plt.errorbar(df1d["bin_x"], df1d["dr_mu"], yerr=df1d["dr_mu_err"], label="dr", fmt='d-', capsize=3, markersize=4)
+    elif has_errors and error_style == "band":
+        # dx
+        plt.plot(df1d["bin_x"], df1d["dx_mu"], label="dx", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dx_mu"] - df1d["dx_mu_err"], df1d["dx_mu"] + df1d["dx_mu_err"], alpha=0.3)
+        # dy
+        plt.plot(df1d["bin_x"], df1d["dy_mu"], label="dy", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dy_mu"] - df1d["dy_mu_err"], df1d["dy_mu"] + df1d["dy_mu_err"], alpha=0.3)
+        # dz
+        plt.plot(df1d["bin_x"], df1d["dz_mu"], label="dz", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dz_mu"] - df1d["dz_mu_err"], df1d["dz_mu"] + df1d["dz_mu_err"], alpha=0.3)
+        # dr
+        plt.plot(df1d["bin_x"], df1d["dr_mu"], label="dr", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dr_mu"] - df1d["dr_mu_err"], df1d["dr_mu"] + df1d["dr_mu_err"], alpha=0.3)
+    else:
+        plt.plot(df1d["bin_x"], df1d["dx_mu"], label="dx")
+        plt.plot(df1d["bin_x"], df1d["dy_mu"], label="dy")
+        plt.plot(df1d["bin_x"], df1d["dz_mu"], label="dz")
+        plt.plot(df1d["bin_x"], df1d["dr_mu"], label="dr")
+    plt.xlabel(var); plt.ylabel("μ (cm)")
     plt.title(f"Residual μ vs {var}")
     plt.legend(); plt.grid(True, alpha=0.3); fig.tight_layout()
     if xscale == "log":
         plt.xscale("log")
     plt.savefig(outdir / f"plot_1d_{var}_mu.png", dpi=150); plt.close(fig)
 
+    # Plot sigma (standard deviations)
     fig = plt.figure(figsize=(7, 4))
-    plt.plot(df1d["bin_x"], df1d["dx_sig"], label="dx")
-    plt.plot(df1d["bin_x"], df1d["dy_sig"], label="dy")
-    plt.plot(df1d["bin_x"], df1d["dz_sig"], label="dz")
-    plt.plot(df1d["bin_x"], df1d["dr_sig"], label="dr")
-    plt.xlabel(var); plt.ylabel("σ (mm)")
+    if has_errors and error_style == "errorbar":
+        plt.errorbar(df1d["bin_x"], df1d["dx_sig"], yerr=df1d["dx_sig_err"], label="dx", fmt='o-', capsize=3, markersize=4)
+        plt.errorbar(df1d["bin_x"], df1d["dy_sig"], yerr=df1d["dy_sig_err"], label="dy", fmt='s-', capsize=3, markersize=4)
+        plt.errorbar(df1d["bin_x"], df1d["dz_sig"], yerr=df1d["dz_sig_err"], label="dz", fmt='^-', capsize=3, markersize=4)
+        plt.errorbar(df1d["bin_x"], df1d["dr_sig"], yerr=df1d["dr_sig_err"], label="dr", fmt='d-', capsize=3, markersize=4)
+    elif has_errors and error_style == "band":
+        # dx
+        plt.plot(df1d["bin_x"], df1d["dx_sig"], label="dx", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dx_sig"] - df1d["dx_sig_err"], df1d["dx_sig"] + df1d["dx_sig_err"], alpha=0.3)
+        # dy
+        plt.plot(df1d["bin_x"], df1d["dy_sig"], label="dy", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dy_sig"] - df1d["dy_sig_err"], df1d["dy_sig"] + df1d["dy_sig_err"], alpha=0.3)
+        # dz
+        plt.plot(df1d["bin_x"], df1d["dz_sig"], label="dz", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dz_sig"] - df1d["dz_sig_err"], df1d["dz_sig"] + df1d["dz_sig_err"], alpha=0.3)
+        # dr
+        plt.plot(df1d["bin_x"], df1d["dr_sig"], label="dr", linewidth=2)
+        plt.fill_between(df1d["bin_x"], df1d["dr_sig"] - df1d["dr_sig_err"], df1d["dr_sig"] + df1d["dr_sig_err"], alpha=0.3)
+    else:
+        plt.plot(df1d["bin_x"], df1d["dx_sig"], label="dx")
+        plt.plot(df1d["bin_x"], df1d["dy_sig"], label="dy")
+        plt.plot(df1d["bin_x"], df1d["dz_sig"], label="dz")
+        plt.plot(df1d["bin_x"], df1d["dr_sig"], label="dr")
+    plt.xlabel(var); plt.ylabel("σ (cm)")
     plt.title(f"Residual σ vs {var}")
     plt.legend(); plt.grid(True, alpha=0.3); fig.tight_layout()
     if xscale == "log":
         plt.xscale("log")
+    # Set ylim minimum to 0 for sigma plots (dr specifically)
+    ylims = plt.ylim()
+    if ylims[0] < 0:
+        plt.ylim(0, ylims[1])
     plt.savefig(outdir / f"plot_1d_{var}_sig.png", dpi=150); plt.close(fig)
 
 
@@ -633,6 +715,67 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             bins = choose_bins(var)
             df1d = compute_differential_stats_1d_minimal(df_pred, var=var, bins=bins)
             plot_1d_curves(df1d, outdir=outdir, var=var)
+
+    # Generate 3D event displays if 2D heatmaps were requested
+    if args.plot_2d_heatmaps:
+        print("Generating 3D event displays...")
+        # Compute residual r for sorting
+        dx = df_pred['predx'] - df_pred['truex']
+        dy = df_pred['predy'] - df_pred['truey']
+        dz = df_pred['predz'] - df_pred['truez']
+        df_pred['dr'] = np.sqrt(dx**2 + dy**2 + dz**2)
+
+        # Select events by total_signal (min, median, max)
+        sorted_by_signal = df_pred.sort_values('total_signal')
+        signal_indices = [
+            sorted_by_signal.index[0],
+            sorted_by_signal.index[len(sorted_by_signal) // 2],
+            sorted_by_signal.index[-1],
+        ]
+
+        # Select events by residual dr (min, median, max)
+        sorted_by_dr = df_pred.sort_values('dr')
+        dr_indices = [
+            sorted_by_dr.index[0],
+            sorted_by_dr.index[len(sorted_by_dr) // 2],
+            sorted_by_dr.index[-1],
+        ]
+
+        events_by_metric = {
+            'total_signal': signal_indices,
+            'dr': dr_indices,
+        }
+
+        # Load TPC bounds for transforms
+        if args.tpc_bounds_npy and Path(args.tpc_bounds_npy).exists():
+            tpc_bounds_mm = np.load(args.tpc_bounds_npy)
+        else:
+            # Try to extract from CSV's parent directory
+            csv_path = Path(args.csv_file)
+            tpc_bounds_path = csv_path.parent / "geom" / "tpc_bounds_mm.npy"
+            if tpc_bounds_path.exists():
+                tpc_bounds_mm = np.load(tpc_bounds_path)
+            else:
+                print(f"Warning: TPC bounds not found, skipping 3D event displays")
+                tpc_bounds_mm = None
+
+        if tpc_bounds_mm is not None:
+            from utils import compute_align_params, transform_geom
+            align_params = compute_align_params(tpc_bounds_mm)
+
+            # Transform detector geometry (df_geom should already be loaded earlier)
+            df_geom_transformed = transform_geom(df_geom, align_params, "x_offset", "y_offset", "z_offset")
+
+            plot_3d_event_displays(
+                df=df_pred,
+                df_geom=df_geom_transformed,
+                tpc_bounds_mm=tpc_bounds_mm,
+                align_params=align_params,
+                events_by_metric=events_by_metric,
+                outdir=outdir,
+                show_pred=True
+            )
+            print(f"Wrote 3D event displays to: {outdir}")
 
     print("Sample predictions (first 5 rows):")
     print(df_pred[["predx", "predy", "predz"]].head(5).to_string(index=False))

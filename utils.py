@@ -31,7 +31,7 @@ def compute_align_params(tpc_bounds_mm: np.ndarray) -> AlignParams:
     """
     Derive alignment parameters (x_diff, x_midway, z_diff) from TPC module bounds.
 
-    Expected shape: (n_tpc, 2, 3) where each TPC has (min_corner, max_corner) in (x,y,z) [mm].
+    Expected shape: (n_tpc, 2, 3) where each TPC has (min_corner, max_corner) in (x,y,z) [cm].
     Robust to extra duplicates; uses unique coordinate values.
 
     x logic:
