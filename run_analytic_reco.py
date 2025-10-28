@@ -606,11 +606,19 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         params,
         x_col="x_offset",
         y_col="y_offset",
-        z_col="z_offset"
+        z_col="z_offset",
+        out_x="x_offset",
+        out_y="y_offset",
+        out_z="z_offset"
     )
 
-    # Aggregate transformed detector positions
-    det_pos_x, det_pos_y, det_pos_z = detector_means_by_id(df_geom_transformed)
+    # Aggregate transformed detector positions (using overwritten column names)
+    det_pos_x, det_pos_y, det_pos_z = detector_means_by_id(
+        df_geom_transformed,
+        x_col="x_offset",
+        y_col="y_offset",
+        z_col="z_offset"
+    )
     print(f"Detector positions (transformed): x=[{det_pos_x.min():.1f}, {det_pos_x.max():.1f}], "
           f"y=[{det_pos_y.min():.1f}, {det_pos_y.max():.1f}], "
           f"z=[{det_pos_z.min():.1f}, {det_pos_z.max():.1f}]")
@@ -747,28 +755,24 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         }
 
         # Load TPC bounds for transforms
-        if args.tpc_bounds_npy and Path(args.tpc_bounds_npy).exists():
-            tpc_bounds_mm = np.load(args.tpc_bounds_npy)
+        # Try to extract from CSV's parent directory (default location from process_light_outputs.py)
+        csv_path = Path(args.input_csv)
+        tpc_bounds_path = csv_path.parent / "geom" / "tpc_bounds_mm.npy"
+        if tpc_bounds_path.exists():
+            tpc_bounds_mm = np.load(tpc_bounds_path)
         else:
-            # Try to extract from CSV's parent directory
-            csv_path = Path(args.csv_file)
-            tpc_bounds_path = csv_path.parent / "geom" / "tpc_bounds_mm.npy"
-            if tpc_bounds_path.exists():
-                tpc_bounds_mm = np.load(tpc_bounds_path)
-            else:
-                print(f"Warning: TPC bounds not found, skipping 3D event displays")
-                tpc_bounds_mm = None
+            print(f"Warning: TPC bounds not found at {tpc_bounds_path}, skipping 3D event displays")
+            tpc_bounds_mm = None
 
         if tpc_bounds_mm is not None:
-            from utils import compute_align_params, transform_geom
             align_params = compute_align_params(tpc_bounds_mm)
 
-            # Transform detector geometry (df_geom should already be loaded earlier)
-            df_geom_transformed = transform_geom(df_geom, align_params, "x_offset", "y_offset", "z_offset")
+            # Use the already-transformed detector geometry from earlier (line 604)
+            # DO NOT transform again - it was already transformed!
 
             plot_3d_event_displays(
                 df=df_pred,
-                df_geom=df_geom_transformed,
+                df_geom=df_geom_transformed,  # Use the already-transformed geometry
                 tpc_bounds_mm=tpc_bounds_mm,
                 align_params=align_params,
                 events_by_metric=events_by_metric,
