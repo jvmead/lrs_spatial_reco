@@ -229,7 +229,21 @@ def main():
                                      out_x="x_offset", out_y="y_offset", out_z="z_offset")
 
             # Select 3 events by total_signal (min, median, max)
-            sorted_by_signal = df_new.sort_values('total_signal')
+            # First filter: remove events with NaN true positions
+            df_valid = df_new[
+                df_new['truex'].notna() &
+                df_new['truey'].notna() &
+                df_new['truez'].notna()
+            ].copy()
+            frac_valid_coords = len(df_valid) / len(df_new) * 100
+            logging.info(f"Filtered to events with valid true positions: {len(df_valid)} / {len(df_new)} ({frac_valid_coords:.1f}%)")
+
+            # Second filter: remove events with zero total signal
+            df_valid = df_valid[df_valid['total_signal'] > 0].copy()
+            frac_nonzero_signal = len(df_valid) / len(df_new) * 100
+            logging.info(f"Filtered to events with non-zero signal: {len(df_valid)} / {len(df_new)} ({frac_nonzero_signal:.1f}%)")
+
+            sorted_by_signal = df_valid.sort_values('total_signal')
             event_indices = [
                 sorted_by_signal.index[0],  # min
                 sorted_by_signal.index[len(sorted_by_signal) // 2],  # median

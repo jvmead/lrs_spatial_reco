@@ -450,25 +450,38 @@ def plot_3d_event_display(
                     float(det_row['z_offset'].iloc[0])
                 ])
     det_signals = np.array(det_signals)
+    det_signals = np.nan_to_num(det_signals, nan=0.0)  # Treat NaN as zero signal
     det_positions = np.array(det_positions)
 
-    # Scale marker sizes: min size 1 for zero signal, others scaled accordingly
-    size_min, size_max = 1, 300
+    # Scale marker sizes: linear scaling from 10 (min non-zero) to 300 (max)
+    size_min, size_max = 10, 300
     if len(det_signals) > 0:
         if det_signals.max() > 0:
+            # Linear scaling based on detector signal values
             sizes = size_min + (det_signals / det_signals.max()) * (size_max - size_min)
-            sizes[det_signals == 0] = size_min
+            sizes[det_signals == 0] = 1  # Zero signal gets size 1 for array, but plotted separately
         else:
-            sizes = np.full_like(det_signals, size_min)
+            sizes = np.full_like(det_signals, 1)  # All zeros
     else:
         sizes = np.array([])
 
-    # Plot detectors
+    # Plot detectors (with separate markers for signal vs no-signal)
     if len(det_positions) > 0:
-        # Plot actual detectors (variable size)
-        scatter_det = ax.scatter(det_positions[:, 0], det_positions[:, 1], det_positions[:, 2],
-                   s=sizes, c='lightgray', alpha=0.7, edgecolors='black', linewidths=0.5,
-                   label='_nolegend_', depthshade=False)
+        has_signal = det_signals > 0
+        no_signal = (det_signals == 0) | (det_signals == np.nan)
+
+        # Plot detectors with signal (circles, variable size)
+        if has_signal.any():
+            ax.scatter(det_positions[has_signal, 0], det_positions[has_signal, 2], det_positions[has_signal, 1],
+                   s=sizes[has_signal], c='lightgray', alpha=0.7, edgecolors='black', linewidths=0.5,
+                   label='_nolegend_', depthshade=False, marker='o')
+
+        # Plot detectors without signal (crosses, larger for visibility)
+        if no_signal.any():
+            ax.scatter(det_positions[no_signal, 0], det_positions[no_signal, 2], det_positions[no_signal, 1],
+                   s=50, c='red', alpha=0.3,linewidths=0.5,
+                   label='_nolegend_', depthshade=False, marker='x')
+
         # Add a fixed-size legend marker for detectors
         ax.scatter([], [], [], s=60, c='lightgray', edgecolors='black', linewidths=0.5, label='Detectors')
 
@@ -494,11 +507,11 @@ def plot_3d_event_display(
         )
         transformed_corners = np.column_stack([x_transformed, y_transformed, z_transformed])
 
-        # Draw edges
+        # Draw edges (X, Z, Y order for Y-up orientation)
         for i, j in edges_idx:
             ax.plot([transformed_corners[i, 0], transformed_corners[j, 0]],
-                   [transformed_corners[i, 1], transformed_corners[j, 1]],
                    [transformed_corners[i, 2], transformed_corners[j, 2]],
+                   [transformed_corners[i, 1], transformed_corners[j, 1]],
                    color=color, alpha=0.6, linewidth=1.5)
 
     # Compute axis limits from ALL transformed TPC corners (not just min/max)
@@ -534,54 +547,46 @@ def plot_3d_event_display(
     # Get true position for axis lines
     true_pos = [float(event['truex']), float(event['truey']), float(event['truez'])]
 
-    # True position axis lines to boundaries (plot BEFORE markers)
-    ax.plot([true_pos[0], xlim[0]], [true_pos[1], true_pos[1]], [true_pos[2], true_pos[2]],
+    # True position axis lines to boundaries (X, Z, Y order for Y-up orientation)
+    ax.plot([true_pos[0], xlim[0]], [true_pos[2], true_pos[2]], [true_pos[1], true_pos[1]],
            'b:', linewidth=1, alpha=0.5)
-    ax.plot([true_pos[0], xlim[1]], [true_pos[1], true_pos[1]], [true_pos[2], true_pos[2]],
+    ax.plot([true_pos[0], xlim[1]], [true_pos[2], true_pos[2]], [true_pos[1], true_pos[1]],
            'b:', linewidth=1, alpha=0.5)
-    ax.plot([true_pos[0], true_pos[0]], [true_pos[1], ylim[0]], [true_pos[2], true_pos[2]],
+    ax.plot([true_pos[0], true_pos[0]], [true_pos[2], zlim[0]], [true_pos[1], true_pos[1]],
            'b:', linewidth=1, alpha=0.5)
-    ax.plot([true_pos[0], true_pos[0]], [true_pos[1], ylim[1]], [true_pos[2], true_pos[2]],
+    ax.plot([true_pos[0], true_pos[0]], [true_pos[2], zlim[1]], [true_pos[1], true_pos[1]],
            'b:', linewidth=1, alpha=0.5)
-    ax.plot([true_pos[0], true_pos[0]], [true_pos[1], true_pos[1]], [true_pos[2], zlim[0]],
+    ax.plot([true_pos[0], true_pos[0]], [true_pos[2], true_pos[2]], [true_pos[1], ylim[0]],
            'b:', linewidth=1, alpha=0.5)
-    ax.plot([true_pos[0], true_pos[0]], [true_pos[1], true_pos[1]], [true_pos[2], zlim[1]],
+    ax.plot([true_pos[0], true_pos[0]], [true_pos[2], true_pos[2]], [true_pos[1], ylim[1]],
            'b:', linewidth=1, alpha=0.5)
 
-    # Plot predicted position axis lines if requested (BEFORE markers)
+    # Plot predicted position axis lines if requested (X, Z, Y order for Y-up orientation)
     if show_pred and 'predx' in event.index:
         pred_pos = [float(event['predx']), float(event['predy']), float(event['predz'])]
 
         # Predicted position axis lines
-        ax.plot([pred_pos[0], xlim[0]], [pred_pos[1], pred_pos[1]], [pred_pos[2], pred_pos[2]],
+        ax.plot([pred_pos[0], xlim[0]], [pred_pos[2], pred_pos[2]], [pred_pos[1], pred_pos[1]],
                'r:', linewidth=1, alpha=0.5)
-        ax.plot([pred_pos[0], xlim[1]], [pred_pos[1], pred_pos[1]], [pred_pos[2], pred_pos[2]],
+        ax.plot([pred_pos[0], xlim[1]], [pred_pos[2], pred_pos[2]], [pred_pos[1], pred_pos[1]],
                'r:', linewidth=1, alpha=0.5)
-        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[1], ylim[0]], [pred_pos[2], pred_pos[2]],
+        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[2], zlim[0]], [pred_pos[1], pred_pos[1]],
                'r:', linewidth=1, alpha=0.5)
-        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[1], ylim[1]], [pred_pos[2], pred_pos[2]],
+        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[2], zlim[1]], [pred_pos[1], pred_pos[1]],
                'r:', linewidth=1, alpha=0.5)
-        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[1], pred_pos[1]], [pred_pos[2], zlim[0]],
+        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[2], pred_pos[2]], [pred_pos[1], ylim[0]],
                'r:', linewidth=1, alpha=0.5)
-        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[1], pred_pos[1]], [pred_pos[2], zlim[1]],
+        ax.plot([pred_pos[0], pred_pos[0]], [pred_pos[2], pred_pos[2]], [pred_pos[1], ylim[1]],
                'r:', linewidth=1, alpha=0.5)
 
-    # Plot true position marker LAST (on top, larger, no depthshade)
-    # Ensure true position is transformed with align_params for both marker and axis lines
-    truex, truey, truez = float(event['truex']), float(event['truey']), float(event['truez'])
-    truex_t, truey_t, truez_t = transform_arrays(np.array([truex]), np.array([truey]), np.array([truez]), align_params)
-    # Axis lines from true position to plot limits (use transformed coordinates)
-    ax.plot([truex_t[0], xlim[0]], [truey_t[0], truey_t[0]], [truez_t[0], truez_t[0]], 'b:', linewidth=1, alpha=0.5)
-    ax.plot([truex_t[0], xlim[1]], [truey_t[0], truey_t[0]], [truez_t[0], truez_t[0]], 'b:', linewidth=1, alpha=0.5)
-    ax.plot([truex_t[0], truex_t[0]], [truey_t[0], ylim[0]], [truez_t[0], truez_t[0]], 'b:', linewidth=1, alpha=0.5)
-    ax.plot([truex_t[0], truex_t[0]], [truey_t[0], ylim[1]], [truez_t[0], truez_t[0]], 'b:', linewidth=1, alpha=0.5)
-    ax.plot([truex_t[0], truex_t[0]], [truey_t[0], truey_t[0]], [truez_t[0], zlim[0]], 'b:', linewidth=1, alpha=0.5)
-    ax.plot([truex_t[0], truex_t[0]], [truey_t[0], truey_t[0]], [truez_t[0], zlim[1]], 'b:', linewidth=1, alpha=0.5)
-    ax.scatter(truex_t[0], truey_t[0], truez_t[0], c='blue', s=200, marker='o', label='True', 
+    # Plot true position marker (X, Z, Y order for Y-up orientation)
+    truex_t, truey_t, truez_t = float(event['truex']), float(event['truey']), float(event['truez'])
+    ax.scatter(truex_t, truez_t, truey_t, c='blue', s=60, marker='o', label='True',
                edgecolors='black', linewidths=2, depthshade=False, zorder=1000)
-    # Plot predicted position marker LAST (on top) if requested
+
+    # Plot predicted position marker if requested
     if show_pred and 'predx' in event.index:
-        ax.scatter(*pred_pos, c='red', s=200, marker='o', label='Pred',
+        ax.scatter(pred_pos[0], pred_pos[2], pred_pos[1], c='red', s=60, marker='o', label='Pred',
                    edgecolors='black', linewidths=2, depthshade=False, zorder=1000)
 
     # Set 1:1:1 aspect ratio
@@ -589,17 +594,17 @@ def plot_3d_event_display(
     y_range = ylim[1] - ylim[0]
     z_range = zlim[1] - zlim[0]
     max_range = max(x_range, y_range, z_range)
-    ax.set_box_aspect([x_range/max_range, y_range/max_range, z_range/max_range])
+    ax.set_box_aspect([x_range/max_range, z_range/max_range, y_range/max_range])
 
-    # Set labels and limits
+    # Set labels and limits (X, Z, Y order for Y-up orientation)
     ax.set_xlabel('X [cm]')
-    ax.set_ylabel('Y [cm]')
-    ax.set_zlabel('Z [cm]')
+    ax.set_ylabel('Z [cm]')
+    ax.set_zlabel('Y [cm]')
     ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    ax.set_zlim(zlim)
-    ax.set_title(title, fontsize=10)
-    ax.legend(loc='upper right', fontsize=8)
+    ax.set_ylim(zlim)
+    ax.set_zlim(ylim)
+    ax.set_title(title, fontsize=10, pad=20)  # Added pad=20 to offset title
+    ax.legend(loc='lower right', fontsize=8)
 
 
 def plot_3d_event_displays(
@@ -612,7 +617,7 @@ def plot_3d_event_displays(
     show_pred: bool = True,
 ) -> None:
     """
-    Create 3D event display plots for selected events.
+    Create 3D event display plots for selected events with 2D projections below.
 
     Args:
         df: Full dataframe with events
@@ -624,11 +629,14 @@ def plot_3d_event_displays(
         show_pred: Whether to show predicted positions
     """
     for metric_name, event_indices in events_by_metric.items():
-        fig = plt.figure(figsize=(18, 6))
+        # Create figure with 2 rows: 3D plots on top, 2D projections on bottom
+        fig = plt.figure(figsize=(18, 12))
+        gs = fig.add_gridspec(2, 3, height_ratios=[2, 1], hspace=0.05, wspace=0.15)
 
         labels = ['Min', 'Median', 'Max']
         for i, (event_idx, label) in enumerate(zip(event_indices, labels)):
-            ax = fig.add_subplot(1, 3, i+1, projection='3d')
+            # 3D plot on top row
+            ax_3d = fig.add_subplot(gs[0, i], projection='3d')
             event = df.loc[event_idx]
 
             # Build title with metric value
@@ -642,10 +650,119 @@ def plot_3d_event_displays(
                 title = f"{label} {metric_name}"
 
             plot_3d_event_display(
-                ax, event, df_geom, tpc_bounds_mm, align_params,
+                ax_3d, event, df_geom, tpc_bounds_mm, align_params,
                 show_pred=show_pred, title=title
             )
 
-        plt.tight_layout(rect=[0, 0, 1, 0.98])  # Leave space at top for titles
+            # Add 2D projections in bottom row
+            # Get positions
+            truex, truey, truez = float(event['truex']), float(event['truey']), float(event['truez'])
+
+            # Filter detector geometry to only show detectors from this event's TPC
+            event_tpc_val = event.get('int_tpc_num', -1)
+            if pd.notna(event_tpc_val):
+                event_tpc = int(event_tpc_val)
+            else:
+                event_tpc = -1
+            if event_tpc >= 0:
+                df_geom_filtered = df_geom[df_geom['TPC'] == event_tpc]
+            else:
+                df_geom_filtered = df_geom
+
+            # Get detector signals and positions
+            det_signals = []
+            det_positions = []
+            for det_id in range(16):
+                col = f"det_{det_id}_max"
+                if col in event.index:
+                    signal = float(event[col])
+                    det_row = df_geom_filtered[df_geom_filtered['Detector'] == det_id]
+                    if not det_row.empty:
+                        det_signals.append(signal)
+                        det_positions.append([
+                            float(det_row['x_offset'].iloc[0]),
+                            float(det_row['y_offset'].iloc[0]),
+                            float(det_row['z_offset'].iloc[0])
+                        ])
+            det_signals = np.array(det_signals)
+            det_signals = np.nan_to_num(det_signals, nan=0.0)
+            det_positions = np.array(det_positions)
+
+            # Scale marker sizes: linear scaling from 10 (min non-zero) to 300 (max)
+            size_min, size_max = 10, 300
+            if len(det_signals) > 0 and det_signals.max() > 0:
+                # Linear scaling based on detector signal values
+                sizes = size_min + (det_signals / det_signals.max()) * (size_max - size_min)
+                sizes[det_signals == 0] = 1  # Zero signal gets very small size
+            else:
+                sizes = np.full_like(det_signals, 1)
+
+            # Create 2D projection plot (ZY view: Z horizontal, Y vertical)
+            ax_zy = fig.add_subplot(gs[1, i])
+
+            # Plot detectors with signal (circles)
+            if len(det_positions) > 0:
+                has_signal = det_signals > 0
+                if has_signal.any():
+                    ax_zy.scatter(det_positions[has_signal, 2], det_positions[has_signal, 1],
+                                 s=sizes[has_signal], c='lightgray', alpha=0.7,
+                                 edgecolors='black', linewidths=0.5, marker='o')
+
+                # Plot detectors without signal (crosses, MUCH larger for visibility)
+                no_signal = (det_signals == 0) | (det_signals == np.nan)
+                if no_signal.any():
+                    ax_zy.scatter(det_positions[no_signal, 2], det_positions[no_signal, 1],
+                                 s=50, c='red', alpha=0.3, linewidths=0.5, marker='x')
+
+            # Plot true position
+            ax_zy.scatter(truez, truey, c='blue', s=50, marker='o',
+                         edgecolors='black', linewidths=1)
+
+            # Plot predicted position if available
+            if show_pred and 'predx' in event.index:
+                ax_zy.scatter(float(event['predz']), float(event['predy']),
+                             c='red', s=50, marker='o', edgecolors='black',
+                             linewidths=1)
+
+            # Compute axis limits from ALL transformed TPC bounds (not just event's TPC)
+            # This ensures all three 2D plots have the same axis limits
+            from utils import transform_arrays
+            all_z_transformed = []
+            all_y_transformed = []
+
+            for bounds in tpc_bounds_mm:
+                z_min_orig, y_min_orig = bounds[0][2], bounds[0][1]
+                z_max_orig, y_max_orig = bounds[1][2], bounds[1][1]
+                x_min_orig, x_max_orig = bounds[0][0], bounds[1][0]
+
+                # Transform all 8 corners
+                corners_x = np.array([x_min_orig, x_min_orig, x_min_orig, x_min_orig,
+                                     x_max_orig, x_max_orig, x_max_orig, x_max_orig])
+                corners_y = np.array([y_min_orig, y_min_orig, y_max_orig, y_max_orig,
+                                     y_min_orig, y_min_orig, y_max_orig, y_max_orig])
+                corners_z = np.array([z_min_orig, z_max_orig, z_min_orig, z_max_orig,
+                                     z_min_orig, z_max_orig, z_min_orig, z_max_orig])
+
+                # Transform returns (x_t, y_t, z_t) in that order
+                x_t, y_t, z_t = transform_arrays(corners_x, corners_y, corners_z, align_params)
+                all_z_transformed.extend(z_t)
+                all_y_transformed.extend(y_t)
+
+            # Set limits to encompass all TPCs
+            z_min, z_max = min(all_z_transformed), max(all_z_transformed)
+            y_min, y_max = min(all_y_transformed), max(all_y_transformed)
+            ax_zy.set_xlim([z_min, z_max])
+            ax_zy.set_ylim([y_min, y_max])
+
+            ax_zy.set_xlabel('Z [cm]', fontsize=9)
+            ax_zy.set_ylabel('Y [cm]', fontsize=9)
+            # Set title with true position coordinates
+            ax_zy.set_title(f'True: ({truex:.1f}, {truey:.1f}, {truez:.1f}) cm', fontsize=10)
+            ax_zy.tick_params(labelsize=8)
+            # Enforce 1:1 aspect ratio
+            ax_zy.set_aspect('equal')
+            ax_zy.grid(True, alpha=0.3)
+
         fig.savefig(outdir / f"event_display_3d_{metric_name}.png", dpi=150, bbox_inches='tight')
         plt.close(fig)
+
