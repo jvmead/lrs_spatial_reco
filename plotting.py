@@ -12,6 +12,135 @@ from pathlib import Path
 from typing import Tuple, Optional, List, Dict
 from utils import transform_arrays
 
+try:
+    import corner
+    HAS_CORNER = True
+except ImportError:
+    HAS_CORNER = False
+    print("Warning: corner package not available. Corner plots will be skipped.")
+
+def plot_distributions(
+    df: pd.DataFrame,
+    x_col: str,
+    y_col: str,
+    z_col: str,
+    w_col: Optional[str] = None,
+    x_col2: Optional[str] = None,
+    y_col2: Optional[str] = None,
+    z_col2: Optional[str] = None,
+    w_col2: Optional[str] = None,
+    tpc_bounds_mm: Optional[np.ndarray] = None,
+    out_file: Optional[Path] = None,
+    label1: str = "data1",
+    label2: Optional[str] = None,
+    titles: Optional[list[str]] = None,
+    colors: Optional[list[str]] = None,
+    colors2: Optional[list[str]] = None,
+    reference_lines: Optional[list[tuple[float, str, str]]] = None,
+    xlabels: Optional[list[str]] = None,
+) -> None:
+    """
+    Plot distributions for up to 4 variables, optionally with overlaid second dataset.
+
+    Args:
+        df: DataFrame with data columns
+        x_col, y_col, z_col: Column names for first 3 variables
+        w_col: Optional 4th variable column (e.g., "total_signal" or "dr")
+        x_col2, y_col2, z_col2, w_col2: Optional columns for second dataset (overlay)
+        tpc_bounds_mm: Optional TPC bounds array (n_tpc, 2, 3) for vertical lines on x/y/z
+        out_file: If provided, save figure to this path
+        label1: Label for first dataset
+        label2: Label for second dataset (if provided)
+        titles: List of subplot titles (default: None)
+        colors: List of colors for first dataset [x, y, z, w] (default: red, green, blue, purple)
+        colors2: List of colors for second dataset [x, y, z, w] (default: orange, lightgreen, cyan, pink)
+        reference_lines: List of (value, color, label) tuples for vertical reference lines on each subplot
+        xlabels: List of x-axis labels (default: "x [cm]", "y [cm]", "z [cm]", "w")
+    """
+    # Determine number of subplots
+    n_plots = 4 if w_col is not None else 3
+    fig, axes = plt.subplots(1, n_plots, figsize=(4*n_plots, 3))
+
+    # Default colors (matching old plot_spatial_distributions)
+    if colors is None:
+        colors = ["red", "green", "blue", "purple"]
+    if colors2 is None:
+        colors2 = ["orange", "lightgreen", "cyan", "pink"]
+
+    # Default labels
+    if xlabels is None:
+        xlabels = ["x [cm]", "y [cm]", "z [cm]", "w"]
+
+    # Column lists for iteration
+    cols1 = [x_col, y_col, z_col]
+    cols2 = [x_col2, y_col2, z_col2]
+    if w_col:
+        cols1.append(w_col)
+        cols2.append(w_col2)
+
+    # Plot each variable
+    for i in range(len(cols1)):
+        col1 = cols1[i]
+        col2 = cols2[i] if i < len(cols2) else None
+        color1 = colors[i] if i < len(colors) else "gray"
+        color2 = colors2[i] if i < len(colors2) else "lightgray"
+        xlabel = xlabels[i] if i < len(xlabels) else f"var{i}"
+
+        # Compute bins based on data range
+        if col2:
+            data_min = min(df[col1].min(), df[col2].min())
+            data_max = max(df[col1].max(), df[col2].max())
+        else:
+            data_min, data_max = df[col1].min(), df[col1].max()
+
+        bins = np.linspace(data_min, data_max, 50)
+
+        # Plot first dataset (no edgecolor like original)
+        hist_kwargs1 = {'bins': bins, 'alpha': 0.5, 'color': color1}
+        if label1 is not None:
+            hist_kwargs1['label'] = label1
+        axes[i].hist(df[col1], **hist_kwargs1)
+
+        # Plot second dataset if provided
+        if col2:
+            hist_kwargs2 = {'bins': bins, 'alpha': 0.5, 'color': color2}
+            if label2 is not None:
+                hist_kwargs2['label'] = label2
+            axes[i].hist(df[col2], **hist_kwargs2)
+
+        # Set labels and limits
+        axes[i].set_xlabel(xlabel)
+        axes[i].set_xlim(data_min, data_max)
+
+        # Add title if provided
+        if titles and i < len(titles):
+            axes[i].set_title(titles[i])
+
+        # Add TPC bounds for x, y, z (not w)
+        if tpc_bounds_mm is not None and i < 3:
+            for bounds in tpc_bounds_mm:
+                axes[i].axvline(bounds[0][i], color="k", linestyle="--", alpha=1)
+                axes[i].axvline(bounds[1][i], color="k", linestyle="--", alpha=1)
+
+        # Add reference lines if provided (list of lists or single list for all)
+        if reference_lines is not None and i < len(reference_lines):
+            ref_lines = reference_lines[i]
+            if ref_lines:  # Only if this subplot has reference lines
+                for value, color, lbl in ref_lines:
+                    axes[i].axvline(value, color=color, linestyle='--', linewidth=1, label=lbl)
+
+        axes[i].legend()
+        axes[i].grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if out_file:
+        fig.savefig(out_file)
+        plt.close(fig)
+    else:
+        plt.show()
+
+
+# Backwards compatibility alias
 def plot_spatial_distributions(
     df: pd.DataFrame,
     x_true_col: str,
@@ -27,74 +156,159 @@ def plot_spatial_distributions(
     label_true: str = "true",
     label_pred: str = "pred",
 ) -> None:
+    """Backwards compatibility wrapper for plot_distributions."""
+    w_col = "total_signal" if (include_log_signal and "total_signal" in df.columns) else None
+    plot_distributions(
+        df=df,
+        x_col=x_true_col,
+        y_col=y_true_col,
+        z_col=z_true_col,
+        w_col=w_col,
+        x_col2=x_pred_col,
+        y_col2=y_pred_col,
+        z_col2=z_pred_col,
+        w_col2=None,
+        tpc_bounds_mm=tpc_bounds_mm,
+        out_file=out_file,
+        label1=label_true,
+        label2=label_pred if x_pred_col else None,
+    )
+
+
+def plot_residual_distributions(
+    df: pd.DataFrame,
+    dx_col: str = "dx",
+    dy_col: str = "dy",
+    dz_col: str = "dz",
+    dr_col: str = "dr",
+    out_file: Optional[Path] = None,
+    tpc_bounds_mm: Optional[np.ndarray] = None,
+    truex_col: str = "truex",
+    truey_col: str = "truey",
+    truez_col: str = "truez",
+) -> None:
     """
-    Plot spatial (x, y, z) distributions + optional log(total_signal).
+    Plot residual distributions using the generalized plot_distributions function.
+    Adds statistics: std dev for dx/dy/dz, and median/1.538 for dr.
+    """
+    # Compute statistics
+    dx_std = df[dx_col].std()
+    dy_std = df[dy_col].std()
+    dz_std = df[dz_col].std()
+    dr_median = df[dr_col].median()
+    dr_scaled = dr_median / 1.538
+
+    # Compute center-guess reference for dr if TPC bounds provided
+    reference_lines = []
+
+    # dx, dy, dz get perfect line + std dev annotation
+    for i, (col, std) in enumerate([(dx_col, dx_std), (dy_col, dy_std), (dz_col, dz_std)]):
+        reference_lines.append([
+            (0, 'red', ''),
+            (std, 'k', f'σ={std:.2f} cm'),
+            (-std, 'k', '')  # Mirror line without duplicate label
+        ])
+
+    # For dr, add perfect, center-guess, and median/1.538 lines
+    dr_refs = [(0, 'red', '')]
+    if tpc_bounds_mm is not None and all(col in df.columns for col in [truex_col, truey_col, truez_col]):
+        # Compute TPC center (average across all modules)
+        tpc_centers = []
+        for mod_bounds in tpc_bounds_mm:
+            center_x = (mod_bounds[0, 0] + mod_bounds[1, 0]) / 2
+            center_y = (mod_bounds[0, 1] + mod_bounds[1, 1]) / 2
+            center_z = (mod_bounds[0, 2] + mod_bounds[1, 2]) / 2
+            tpc_centers.append([center_x, center_y, center_z])
+
+        avg_center = np.mean(tpc_centers, axis=0)
+
+        # Compute distance from each true position to center
+        dr_center = np.sqrt(
+            (df[truex_col] - avg_center[0])**2 +
+            (df[truey_col] - avg_center[1])**2 +
+            (df[truez_col] - avg_center[2])**2
+        )
+        # Use median/1.538 as std dev estimator for center guess (consistent with actual reco)
+        center_guess_stddev = np.median(dr_center) / 1.538
+        dr_refs.append((center_guess_stddev, 'orange', f'Center guess: {center_guess_stddev:.2f} cm'))
+
+    # Add median/1.538 line for actual reconstruction
+    dr_refs.append((dr_scaled, 'green', f'Reco median/1.538: {dr_scaled:.2f} cm'))
+    reference_lines.append(dr_refs)
+
+    # Use the generalized plot_distributions function
+    plot_distributions(
+        df=df,
+        x_col=dx_col,
+        y_col=dy_col,
+        z_col=dz_col,
+        w_col=dr_col,
+        tpc_bounds_mm=None,  # Don't show TPC bounds for residuals
+        out_file=out_file,
+        label1=None,  # No legend entry for the histograms
+        titles=None,  # No titles on subplots
+        xlabels=["dx [cm]", "dy [cm]", "dz [cm]", "dr [cm]"],
+        reference_lines=reference_lines,
+    )
+
+
+def plot_residual_corner(
+    df: pd.DataFrame,
+    dx_col: str = "dx",
+    dy_col: str = "dy",
+    dz_col: str = "dz",
+    dr_col: str = "dr",
+    out_file: Optional[Path] = None,
+) -> None:
+    """
+    Create a corner plot showing correlations between residuals.
+    Requires the 'corner' package.
 
     Args:
-        df: DataFrame with position columns
-        x_true_col, y_true_col, z_true_col: Column names for true positions
-        x_pred_col, y_pred_col, z_pred_col: Optional column names for predicted positions
-        tpc_bounds_mm: Optional TPC bounds array (n_tpc, 2, 3) for vertical lines
-        include_log_signal: If True, add 4th subplot with log10(total_signal)
+        df: DataFrame with residual columns
+        dx_col, dy_col, dz_col, dr_col: Column names for residuals
         out_file: If provided, save figure to this path
-        title_prefix: Prefix for subplot titles (e.g., "True" or "Pred vs True")
-        label_true: Label for first histogram (default "true", use "raw" for input distributions)
-        label_pred: Label for second histogram (default "pred", use "tsfm" for input distributions)
     """
-    # Check if total_signal exists before deciding number of subplots
-    has_total_signal = "total_signal" in df.columns
-    n_plots = 4 if (include_log_signal and has_total_signal) else 3
-    fig, axes = plt.subplots(1, n_plots, figsize=(4*n_plots, 3))
+    if not HAS_CORNER:
+        print("Corner plot skipped: 'corner' package not installed. Install with: pip install corner")
+        return
 
-    # X histogram
-    xbins = np.linspace(-75, 75, 150)
-    axes[0].hist(df[x_true_col], bins=xbins, alpha=0.5, color="red", label=label_true)
-    if x_pred_col:
-        axes[0].hist(df[x_pred_col], bins=xbins, alpha=0.5, color="orange", label=label_pred)
-    axes[0].set_xlabel("x [cm]")
-    if tpc_bounds_mm is not None:
-        for bounds in tpc_bounds_mm:
-            axes[0].axvline(bounds[0][0], color="k", linestyle="--", alpha=0.5)
-            axes[0].axvline(bounds[1][0], color="k", linestyle="--", alpha=0.5)
-    axes[0].legend()
+    # Prepare data
+    labels = ['dx (cm)', 'dy (cm)', 'dz (cm)', 'dr (cm)']
+    data = np.vstack([
+        df[dx_col].to_numpy(dtype=float),
+        df[dy_col].to_numpy(dtype=float),
+        df[dz_col].to_numpy(dtype=float),
+        df[dr_col].to_numpy(dtype=float)
+    ]).T
 
-    # Y histogram
-    ybins = np.linspace(-75, 75, 150)
-    axes[1].hist(df[y_true_col], bins=ybins, alpha=0.5, color="green", label=label_true)
-    if y_pred_col:
-        axes[1].hist(df[y_pred_col], bins=ybins, alpha=0.5, color="lightgreen", label=label_pred)
-    axes[1].set_xlabel("y [cm]")
-    if tpc_bounds_mm is not None:
-        for bounds in tpc_bounds_mm:
-            axes[1].axvline(bounds[0][1], color="k", linestyle="--", alpha=0.5)
-            axes[1].axvline(bounds[1][1], color="k", linestyle="--", alpha=0.5)
-    axes[1].legend()
+    # Remove any rows with NaN or Inf
+    finite_mask = np.all(np.isfinite(data), axis=1)
+    data = data[finite_mask]
 
-    # Z histogram
-    zbins = np.linspace(-75, 75, 150)
-    axes[2].hist(df[z_true_col], bins=zbins, alpha=0.5, color="blue", label=label_true)
-    if z_pred_col:
-        axes[2].hist(df[z_pred_col], bins=zbins, alpha=0.5, color="cyan", label=label_pred)
-    axes[2].set_xlabel("z [cm]")
-    if tpc_bounds_mm is not None:
-        for bounds in tpc_bounds_mm:
-            axes[2].axvline(bounds[0][2], color="k", linestyle="--", alpha=0.5)
-            axes[2].axvline(bounds[1][2], color="k", linestyle="--", alpha=0.5)
-    axes[2].legend()
+    if len(data) == 0:
+        print("Warning: No finite data for corner plot")
+        return
 
-    # Optional log(total_signal) histogram (only if column exists and requested)
-    if n_plots == 4:
-        log_signal = np.log10(df["total_signal"].values[df["total_signal"] > 0])
-        axes[3].hist(log_signal, bins=50, alpha=0.5, color="purple", label="total_signal")
-        axes[3].set_xlabel("log10(total_signal) [PE/sample]")
-        axes[3].legend()
+    # Create corner plot
+    figure = corner.corner(
+        data,
+        labels=labels,
+        show_titles=True,
+        title_fmt=".2f",
+        title_kwargs={"fontsize": 12},
+        quantiles=[0.16, 0.5, 0.84],
+        levels=(0.68, 0.95),
+        plot_datapoints=False,
+        fill_contours=True,
+    )
 
-    plt.tight_layout()
     if out_file:
-        fig.savefig(out_file)
-        plt.close(fig)
+        figure.savefig(out_file, dpi=150, bbox_inches='tight')
+        plt.close(figure)
     else:
         plt.show()
+
 
 def _edges_log10(indep: np.ndarray, bins: int) -> np.ndarray:
     finite_pos = np.isfinite(indep) & (indep > 0)

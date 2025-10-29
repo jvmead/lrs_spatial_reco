@@ -52,12 +52,12 @@ from plotting import (
     plot_pred_vs_true_xyz,
     plot_1d_curves,
     plot_spatial_distributions,
+    plot_residual_corner,
     plot_3d_event_displays,
 )
 
 DEFAULT_1D_VARS = ["truex", "truey", "truez", "dr", "total_signal"]
 HEATMAP_INDEP_VARS = ["truex", "truey", "truez", "total_signal"]
-
 
 # ---------- small utils ----------
 
@@ -565,6 +565,8 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
                    help="Save 1D line plots of μ and σ vs the listed variables (same options as --export-1d-over).")
     p.add_argument("--plot-1d-all", action="store_true",
                    help="Save 1D plots for: truex truey truez dr total_signal")
+    p.add_argument("--plot-distributions", action="store_true",
+                   help="Plot output distributions (true vs pred for x/y/z) and residual histograms (dx/dy/dz/dr)")
 
     return p.parse_args(argv)
 
@@ -645,14 +647,83 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         eff_per_det=eff_per_det,
     )
 
+    # Create output distribution plots
     need_outdir = bool(
         args.save or args.export_1d_over or args.export_1d_all or
-        args.plot_2d_heatmaps or args.plot_1d_over or args.plot_1d_all
+        args.plot_2d_heatmaps or args.plot_1d_over or args.plot_1d_all or
+        args.plot_distributions
     )
     outdir: Optional[Path] = None
     if need_outdir:
         mode_tag = "uw" if args.uw else "pde"
         outdir = ensure_outdir(args, mode_tag)
+
+    if args.plot_distributions and outdir is not None:
+        # Compute residuals first
+        dx = (df_pred["predx"] - df_pred["truex"]).to_numpy(dtype=float)
+        dy = (df_pred["predy"] - df_pred["truey"]).to_numpy(dtype=float)
+        dz = (df_pred["predz"] - df_pred["truez"]).to_numpy(dtype=float)
+        dr = np.sqrt(dx**2 + dy**2 + dz**2)
+
+        # Add to dataframe temporarily for plotting
+        df_pred_temp = df_pred.copy()
+        df_pred_temp['dx'] = dx
+        df_pred_temp['dy'] = dy
+        df_pred_temp['dz'] = dz
+        df_pred_temp['dr'] = dr
+
+        # Import plotting functions
+        from plotting import plot_spatial_distributions, plot_residual_distributions
+
+        # Plot overlaid true/pred distributions for x, y, z
+        plot_spatial_distributions(
+            df=df_pred_temp,
+            x_true_col="truex",
+            y_true_col="truey",
+            z_true_col="truez",
+            x_pred_col="predx",
+            y_pred_col="predy",
+            z_pred_col="predz",
+            tpc_bounds_mm=tpc_bounds_mm,
+            include_log_signal=False,
+            out_file=outdir / "output_distributions.png",
+            title_prefix="",
+            label_true="true",
+            label_pred="pred",
+        )
+        print(f"Saved: {outdir / 'output_distributions.png'}")
+
+        # Plot residual histograms using consistent styling
+        plot_residual_distributions(
+            df=df_pred_temp,
+            dx_col="dx",
+            dy_col="dy",
+            dz_col="dz",
+            dr_col="dr",
+            out_file=outdir / "residual_distributions.png",
+            tpc_bounds_mm=tpc_bounds_mm,
+            truex_col="truex",
+            truey_col="truey",
+            truez_col="truez",
+        )
+        print(f"Saved: {outdir / 'residual_distributions.png'}")
+
+        # Plot corner plot to show residual correlations
+        plot_residual_corner(
+            df=df_pred_temp,
+            dx_col="dx",
+            dy_col="dy",
+            dz_col="dz",
+            dr_col="dr",
+            out_file=outdir / "residual_corner.png",
+        )
+        print(f"Saved: {outdir / 'residual_corner.png'}")
+
+    if not need_outdir:
+        outdir = None
+        if args.save:
+            mode_tag = "uw" if args.uw else "pde"
+            outdir = ensure_outdir(args, mode_tag)
 
     if args.save and outdir is not None:
         out_df = df_pred[["predx", "predy", "predz"]].copy()
