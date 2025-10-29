@@ -795,7 +795,7 @@ def plot_3d_event_display(
         col = f"det_{det_id}_max"
         if col in event.index:
             signal = float(event[col])
-            # Get transformed detector position from geometry (filtered to event's TPC)
+            # Get UNTRANSFORMED detector position from geometry (filtered to event's TPC)
             det_row = df_geom_filtered[df_geom_filtered['Detector'] == det_id]
             if not det_row.empty:
                 det_signals.append(signal)
@@ -807,6 +807,14 @@ def plot_3d_event_display(
     det_signals = np.array(det_signals)
     det_signals = np.nan_to_num(det_signals, nan=0.0)  # Treat NaN as zero signal
     det_positions = np.array(det_positions)
+
+    # Transform detector positions to common frame (same as TPC boxes and events)
+    if len(det_positions) > 0:
+        from utils import transform_arrays
+        det_x_t, det_y_t, det_z_t = transform_arrays(
+            det_positions[:, 0], det_positions[:, 1], det_positions[:, 2], align_params
+        )
+        det_positions = np.column_stack([det_x_t, det_y_t, det_z_t])
 
     # Scale marker sizes: linear scaling from 10 (min non-zero) to 300 (max)
     size_min, size_max = 10, 300
@@ -889,12 +897,11 @@ def plot_3d_event_display(
         all_transformed_x.extend(x_t)
         all_transformed_y.extend(y_t)
         all_transformed_z.extend(z_t)
-    # Also include the transformed true position in axis limits
+    # Also include the true position in axis limits (already in transformed frame)
     truex, truey, truez = float(event['truex']), float(event['truey']), float(event['truez'])
-    truex_t, truey_t, truez_t = transform_arrays(np.array([truex]), np.array([truey]), np.array([truez]), align_params)
-    all_transformed_x.append(truex_t[0])
-    all_transformed_y.append(truey_t[0])
-    all_transformed_z.append(truez_t[0])
+    all_transformed_x.append(truex)
+    all_transformed_y.append(truey)
+    all_transformed_z.append(truez)
     xlim = [min(all_transformed_x), max(all_transformed_x)]
     ylim = [min(all_transformed_y), max(all_transformed_y)]
     zlim = [min(all_transformed_z), max(all_transformed_z)]
@@ -1042,6 +1049,14 @@ def plot_3d_event_displays(
             det_signals = np.array(det_signals)
             det_signals = np.nan_to_num(det_signals, nan=0.0)
             det_positions = np.array(det_positions)
+
+            # Transform detector positions to common frame
+            if len(det_positions) > 0:
+                from utils import transform_arrays
+                det_x_t, det_y_t, det_z_t = transform_arrays(
+                    det_positions[:, 0], det_positions[:, 1], det_positions[:, 2], align_params
+                )
+                det_positions = np.column_stack([det_x_t, det_y_t, det_z_t])
 
             # Scale marker sizes: linear scaling from 10 (min non-zero) to 300 (max)
             size_min, size_max = 10, 300
