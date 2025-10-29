@@ -310,6 +310,135 @@ def plot_residual_corner(
         plt.show()
 
 
+def plot_detector_signals(
+    df: pd.DataFrame,
+    out_file: Optional[Path] = None,
+    log_scale: bool = False,
+    bins: int = 50,
+    log_bins: bool = False,
+    log_xscale: bool = False,
+    pde_values: Optional[np.ndarray] = None,
+) -> None:
+    """
+    Plot detector signal distributions in a 2-column layout.
+
+    Layout: Detectors 0-7 in left column (bottom to top), 8-15 in right column (bottom to top).
+    Histograms are colored by PDE (photon detection efficiency) if provided.
+
+    Args:
+        df: DataFrame with det_0_max through det_15_max columns
+        out_file: Output file path (if None, displays interactively)
+        log_scale: If True, use log scale on y-axis
+        bins: Number of histogram bins (if log_bins=False)
+        log_bins: If True, use logarithmic binning
+        log_xscale: If True, use log scale on x-axis
+        pde_values: Optional array of PDE values (length 16) for color mapping
+    """
+    det_cols = [f"det_{i}_max" for i in range(16)]
+
+    # Check which columns exist
+    available_cols = [c for c in det_cols if c in df.columns]
+    if not available_cols:
+        print("Warning: No detector columns found (det_#_max)")
+        return
+
+    # Create 2-column layout: 8 rows x 2 columns
+    fig, axes = plt.subplots(8, 2, figsize=(10, 20))
+    fig.suptitle("Detector Signal Distributions (colored by PDE)", fontsize=14, y=0.995)
+
+    # Color mapping based on PDE values
+    if pde_values is not None and len(pde_values) == 16:
+        # Normalize PDE for color mapping (0.002 to 0.006 range typically)
+        pde_min, pde_max = pde_values.min(), pde_values.max()
+        if pde_max > pde_min:
+            cmap = plt.cm.viridis
+            norm = plt.Normalize(vmin=pde_min, vmax=pde_max)
+            colors = [cmap(norm(pde)) for pde in pde_values]
+        else:
+            colors = ['steelblue'] * 16
+    else:
+        colors = ['steelblue'] * 16
+
+    for i in range(16):
+        # Layout: det 0-7 in left column (row 7 to 0), det 8-15 in right column (row 7 to 0)
+        if i < 8:
+            col = 0
+            row = 7 - i  # det 0 at bottom (row 7), det 7 at top (row 0)
+        else:
+            col = 1
+            row = 7 - (i - 8)  # det 8 at bottom (row 7), det 15 at top (row 0)
+
+        ax = axes[row, col]
+
+        col_name = f"det_{i}_max"
+        if col_name in df.columns:
+            data = df[col_name].values
+            # Remove NaN and inf
+            data = data[np.isfinite(data)]
+            # Remove zeros for log binning/scale
+            if log_bins or log_xscale:
+                data = data[data > 0]
+
+            if len(data) > 0:
+                # Compute bins
+                if log_bins:
+                    # Create log-spaced bins
+                    if data.min() > 0:
+                        bin_edges = np.logspace(np.log10(data.min()), np.log10(data.max()), bins + 1)
+                    else:
+                        bin_edges = bins
+                else:
+                    bin_edges = bins
+
+                # Use color based on PDE
+                hist_color = colors[i]
+                ax.hist(data, bins=bin_edges, alpha=0.7, color=hist_color, edgecolor='none')
+
+                # Add statistics text
+                mean_val = np.mean(data)
+                median_val = np.median(data)
+                ax.axvline(mean_val, color='red', linestyle='--', linewidth=1, alpha=0.7, label=f'μ={mean_val:.1f}')
+                ax.axvline(median_val, color='orange', linestyle=':', linewidth=1, alpha=0.7, label=f'med={median_val:.1f}')
+            else:
+                ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.5, 'Missing', ha='center', va='center', transform=ax.transAxes)
+
+        # Title with PDE info if available
+        if pde_values is not None and len(pde_values) == 16:
+            ax.set_title(f"Det {i} (PDE={pde_values[i]:.4f})", fontsize=9)
+        else:
+            ax.set_title(f"Det {i}", fontsize=9)
+        ax.tick_params(labelsize=7)
+
+        if log_scale:
+            ax.set_yscale('log')
+
+        if log_xscale:
+            ax.set_xscale('log')
+
+        # Only show x-label on bottom row
+        if row == 7:
+            ax.set_xlabel("Signal", fontsize=8)
+
+        # Only show y-label on leftmost column
+        if col == 0:
+            ax.set_ylabel("Count", fontsize=8)
+
+        # Add small legend
+        if col_name in df.columns and len(data) > 0:
+            ax.legend(fontsize=6, loc='upper right', framealpha=0.7)
+
+    plt.tight_layout()
+
+    if out_file:
+        plt.savefig(out_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"Saved: {out_file}")
+    else:
+        plt.show()
+
+
 def _edges_log10(indep: np.ndarray, bins: int) -> np.ndarray:
     finite_pos = np.isfinite(indep) & (indep > 0)
     if finite_pos.sum() == 0:
@@ -499,7 +628,10 @@ def plot_heatmaps_resid_vs_vars(
             )
             fig, ax = fig_ax if fig_ax is not None else (None, None)
             if fig is not None:
-                fig.savefig(outdir / f"heatmap_{resid}_vs_{var}.png", dpi=150)
+                # Create subdirectory for each independent variable
+                heatmaps_var_dir = outdir / "heatmaps" / f"heatmaps_f_{var}"
+                heatmaps_var_dir.mkdir(parents=True, exist_ok=True)
+                fig.savefig(heatmaps_var_dir / f"heatmap_{resid}_vs_{var}.png", dpi=150)
                 plt.close(fig)
 
 def plot_pred_vs_true_xyz(df_pred: pd.DataFrame, outdir: Path, bins_map: dict) -> None:
@@ -523,7 +655,10 @@ def plot_pred_vs_true_xyz(df_pred: pd.DataFrame, outdir: Path, bins_map: dict) -
         ax.plot([lo, hi], [lo, hi], linestyle="--", color="white", linewidth=1.2, label="y = x")
         ax.legend(loc="best", framealpha=0.6)
         plt.tight_layout()
-        fig.savefig(outdir / f"heatmap_pred{label}_vs_true{label}.png", dpi=150)
+        # Create subdirectory for pred vs true heatmaps
+        pred_vs_true_dir = outdir / "heatmaps" / "pred_vs_true"
+        pred_vs_true_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(pred_vs_true_dir / f"heatmap_pred{label}_vs_true{label}.png", dpi=150)
         plt.close(fig)
 
 def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str, error_style: str = "band") -> None:
@@ -575,7 +710,10 @@ def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str, error_style: str 
     plt.legend(); plt.grid(True, alpha=0.3); fig.tight_layout()
     if xscale == "log":
         plt.xscale("log")
-    plt.savefig(outdir / f"plot_1d_{var}_mu.png", dpi=150); plt.close(fig)
+    # Create subdirectory for 1D plots
+    plots_1d_dir = outdir / "plots_1d"
+    plots_1d_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(plots_1d_dir / f"plot_1d_{var}_mu.png", dpi=150); plt.close(fig)
 
     # Plot sigma (standard deviations)
     fig = plt.figure(figsize=(7, 4))
@@ -610,7 +748,10 @@ def plot_1d_curves(df1d: pd.DataFrame, outdir: Path, var: str, error_style: str 
     plt.legend(); plt.grid(True, alpha=0.3); fig.tight_layout()
     if xscale == "log":
         plt.xscale("log")
-    plt.savefig(outdir / f"plot_1d_{var}_sig.png", dpi=150); plt.close(fig)
+    # Create subdirectory for 1D plots
+    plots_1d_dir = outdir / "plots_1d"
+    plots_1d_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(plots_1d_dir / f"plot_1d_{var}_sig.png", dpi=150); plt.close(fig)
 
 
 def plot_3d_event_display(

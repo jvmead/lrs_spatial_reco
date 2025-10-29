@@ -53,6 +53,7 @@ from plotting import (
     plot_1d_curves,
     plot_spatial_distributions,
     plot_residual_corner,
+    plot_detector_signals,
     plot_3d_event_displays,
 )
 
@@ -559,6 +560,8 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
     p.add_argument("--bins-signal", type=int, default=24, help="Bins for total_signal/log_total_signal (log10-spaced for total_signal)")
 
     # Plotting (AUTO)
+    p.add_argument("--all", action="store_true",
+                   help="Enable all plotting and export options (distributions, heatmaps, 1D plots/exports, 3D displays)")
     p.add_argument("--plot-2d-heatmaps", action="store_true",
                    help="Auto-generate heatmaps: residual (y) vs each of truex,truey,truez,r,total_signal (log10 bins for total_signal) and also predx/predy/predz vs truex/truey/truez with y=x overlay.")
     p.add_argument("--plot-1d-over", nargs="*", default=[],
@@ -567,6 +570,8 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
                    help="Save 1D plots for: truex truey truez dr total_signal")
     p.add_argument("--plot-distributions", action="store_true",
                    help="Plot output distributions (true vs pred for x/y/z) and residual histograms (dx/dy/dz/dr)")
+    p.add_argument("--plot-3d-displays", action="store_true",
+                   help="Generate 3D event displays for events with min/median/max total_signal and dr")
 
     return p.parse_args(argv)
 
@@ -575,6 +580,14 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = parse_args(argv)
+
+    # If --all is specified, enable all plotting and export options
+    if args.all:
+        args.plot_distributions = True
+        args.plot_2d_heatmaps = True
+        args.plot_1d_all = True
+        args.plot_3d_displays = True
+        args.export_1d_all = True
 
     x_cols = [f"det_{i}_max" for i in range(16)]
 
@@ -651,7 +664,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     need_outdir = bool(
         args.save or args.export_1d_over or args.export_1d_all or
         args.plot_2d_heatmaps or args.plot_1d_over or args.plot_1d_all or
-        args.plot_distributions
+        args.plot_distributions or args.plot_3d_displays
     )
     outdir: Optional[Path] = None
     if need_outdir:
@@ -674,6 +687,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
         # Import plotting functions
         from plotting import plot_spatial_distributions, plot_residual_distributions
+
+        # Plot detector signal distributions (2 columns, colored by PDE)
+        plot_detector_signals(
+            df=df_pred_temp,
+            out_file=outdir / "detector_signals.png",
+            log_scale=False,
+            bins=50,
+            log_bins=True,
+            log_xscale=True,
+            pde_values=eff_per_det,  # Pass PDE values for color mapping
+        )
 
         # Plot overlaid true/pred distributions for x, y, z
         plot_spatial_distributions(
@@ -808,8 +832,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             df1d = compute_differential_stats_1d_minimal(df_pred, var=var, bins=bins)
             plot_1d_curves(df1d, outdir=outdir, var=var)
 
-    # Generate 3D event displays if 2D heatmaps were requested
-    if args.plot_2d_heatmaps:
+    # Generate 3D event displays if requested
+    if args.plot_3d_displays:
         print("Generating 3D event displays...")
         # Compute residual r for sorting
         dx = df_pred['predx'] - df_pred['truex']
@@ -851,19 +875,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if tpc_bounds_mm is not None:
             align_params = compute_align_params(tpc_bounds_mm)
 
-            # Use the already-transformed detector geometry from earlier (line 604)
-            # DO NOT transform again - it was already transformed!
-
+            # Use UNTRANSFORMED geometry - plotting function will apply transforms
             plot_3d_event_displays(
                 df=df_pred,
-                df_geom=df_geom_transformed,  # Use the already-transformed geometry
+                df_geom=df_geom,  # Pass untransformed geometry
                 tpc_bounds_mm=tpc_bounds_mm,
                 align_params=align_params,
                 events_by_metric=events_by_metric,
                 outdir=outdir,
                 show_pred=True
             )
-            print(f"Wrote 3D event displays to: {outdir}")
+            print(f"Wrote 3D event displays to: {outdir}/event_displays_3d/")
 
     print("Sample predictions (first 5 rows):")
     print(df_pred[["predx", "predy", "predz"]].head(5).to_string(index=False))
