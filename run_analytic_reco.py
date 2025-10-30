@@ -616,17 +616,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     # Create output directory if needed
     outdir: Optional[Path] = None
-    if need_outdir:
-        mode_tag = "uw" if args.uw else "pde"
-        outdir = ensure_outdir(args, "analytic_reco", mode_tag)
-
-    # Create output distribution plots
     need_outdir = bool(
         args.save or args.export_1d_over or args.export_1d_all or
         args.plot_2d_heatmaps or args.plot_1d_over or args.plot_1d_all or
         args.plot_distributions or args.plot_3d_displays
     )
+    if need_outdir:
+        mode_tag = "uw" if args.uw else "pde"
+        outdir = ensure_outdir(args, "analytic_reco", mode_tag)
 
+    # Create output distribution plots
     if args.plot_distributions and outdir is not None:
         # Compute residuals first
         dx = (df_pred["predx"] - df_pred["truex"]).to_numpy(dtype=float)
