@@ -53,6 +53,9 @@ from utils import (
     compute_module_centres,
     compute_detector_offsets,
     extract_pde_per_detector,
+    timestamped_outdir,
+    ensure_outdir,
+    sanitize_and_load_csv,
 )
 
 from plotting import (
@@ -93,69 +96,6 @@ DEFAULT_1D_VARS = ["truex", "truey", "truez", "total_signal"]
 
 
 # ==================== UTILITY FUNCTIONS ====================
-
-def timestamped_outdir(base_dir: Path, mode_tag: str, tag: Optional[str]) -> Path:
-    """Create timestamped output directory."""
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    parts = [f"outputs_{mode_tag}"]
-    if tag:
-        parts.append(tag)
-    parts.append(ts)
-    out_name = "_".join(parts)
-    outdir = base_dir / out_name
-    outdir.mkdir(parents=True, exist_ok=False)
-    print(f"Saving outputs to: {outdir}")
-    return outdir
-
-
-def ensure_outdir(args, mode_tag: str) -> Path:
-    """Ensure output directory with gnn_reco_ prefix."""
-    base = Path(args.outdir) if args.outdir else args.input_csv.parent
-    prefixed_base = base.parent / f"gnn_reco_{base.name}"
-    return timestamped_outdir(prefixed_base, mode_tag, args.tag)
-
-
-def sanitize_and_load_csv(input_csv: Path) -> Tuple[pd.DataFrame, list[str]]:
-    """Load CSV and sanitize data."""
-    df = pd.read_csv(input_csv)
-    df = df.replace([np.inf, -np.inf], np.nan)
-
-    # Detect true position columns
-    if {"truex", "truey", "truez"}.issubset(df.columns):
-        target_cols = ["truex", "truey", "truez"]
-    elif {"x_wmean_redef2", "y_wmean_int", "z_wmean_redef2"}.issubset(df.columns):
-        df = df.rename(columns={
-            "x_wmean_redef2": "truex",
-            "y_wmean_int": "truey",
-            "z_wmean_redef2": "truez"
-        })
-        target_cols = ["truex", "truey", "truez"]
-    else:
-        raise ValueError("No valid true position columns found")
-
-    # Drop rows with missing targets
-    n_before = len(df)
-    df = df.dropna(subset=target_cols, how="any").reset_index(drop=True)
-    print(f"Dropped {n_before - len(df)} rows missing true positions")
-
-    # Detector columns
-    x_cols = [f"det_{i}_max" for i in range(16)]
-    present_x_cols = [c for c in x_cols if c in df.columns]
-    if not present_x_cols:
-        raise ValueError("No detector amplitude columns like det_#_max found")
-
-    df[present_x_cols] = df[present_x_cols].fillna(0.0)
-
-    # Compute total signal
-    df["total_signal"] = df[present_x_cols].sum(axis=1)
-    n_before = len(df)
-    df = df[df["total_signal"] > 0.0].reset_index(drop=True)
-    print(f"Dropped {n_before - len(df)} rows with zero total signal")
-
-    df["log_total_signal"] = np.log10(df["total_signal"])
-
-    return df, present_x_cols
-
 
 def save_config(outdir: Path, args: argparse.Namespace, extra_config: Dict[str, Any]) -> None:
     """Save configuration to JSON file."""
@@ -541,7 +481,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     print(metrics_dict)
 
     # ========== Create output directory ==========
-    outdir = ensure_outdir(args, mode_tag="gnn")
+    outdir = ensure_outdir(args, "gnn_reco", mode_tag="")
 
     # ========== Save model ==========
     model_path = outdir / "gnn_model.keras"
@@ -670,7 +610,6 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             y_pred_col="predy",
             z_pred_col="predz",
             tpc_bounds_mm=tpc_bounds_mm,
-            include_log_signal=False,
             out_file=diagnostics_dir / "output_distributions.png",
             label_true="true",
             label_pred="pred",
@@ -825,29 +764,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             'dr': dr_indices,
         }
 
-        # Load TPC bounds for transforms
-        csv_path = Path(args.input_csv)
-        tpc_bounds_path = csv_path.parent / "geom" / "tpc_bounds_mm.npy"
-        if tpc_bounds_path.exists():
-            tpc_bounds_mm_3d = np.load(tpc_bounds_path)
-        else:
-            print(f"Warning: TPC bounds not found at {tpc_bounds_path}, skipping 3D event displays")
-            tpc_bounds_mm_3d = None
-
-        if tpc_bounds_mm_3d is not None:
-            align_params = compute_align_params(tpc_bounds_mm_3d)
-
-            # Use UNTRANSFORMED geometry - plotting function will apply transforms
-            plot_3d_event_displays(
-                df=pred_df,
-                df_geom=df_geom,  # Pass untransformed geometry
-                tpc_bounds_mm=tpc_bounds_mm_3d,
-                align_params=align_params,
-                events_by_metric=events_by_metric,
-                outdir=outdir,
-                show_pred=True
-            )
-            print(f"Wrote 3D event displays to: {outdir}/event_displays_3d/")
+        # Use the SAME TPC bounds and align_params computed earlier (line 360-361)
+        # This ensures consistency with the detector geometry transformation
+        plot_3d_event_displays(
+            df=pred_df,
+            df_geom=df_geom,  # Pass untransformed geometry
+            tpc_bounds_mm=tpc_bounds_mm,  # Use the same bounds from earlier
+            align_params=params,  # Use the same params from earlier
+            events_by_metric=events_by_metric,
+            outdir=outdir,
+            show_pred=True
+        )
+        print(f"Wrote 3D event displays to: {outdir}/event_displays_3d/")
 
     print("\n=== Done ===")
     return 0

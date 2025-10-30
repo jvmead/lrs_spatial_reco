@@ -333,3 +333,107 @@ def extract_pde_per_detector(
             eff = default_pde
         eff_list.append(eff)
     return np.array(eff_list, dtype=float)
+
+
+# ==================== I/O UTILITIES ====================
+
+def timestamped_outdir(base_dir: Path, reco_tag: str, mode_tag: str, tag: Optional[str]) -> Path:
+    """
+    Create timestamped output directory.
+
+    Args:
+        base_dir: Base directory for outputs
+        reco_tag: Reconstruction type tag (e.g., "gnn_reco", "analytic_reco")
+        mode_tag: Mode tag (e.g., "pde", "uw", or empty string)
+        tag: Optional user-provided tag
+
+    Returns:
+        Path to created output directory
+    """
+    from datetime import datetime
+    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    parts = [f"{reco_tag}_outputs_{mode_tag}"] if mode_tag else [f"{reco_tag}_outputs"]
+    if tag:
+        parts.append(tag)
+    parts.append(ts)
+    out_name = "_".join(parts)
+    outdir = base_dir / out_name
+    outdir.mkdir(parents=True, exist_ok=False)
+    print("Saving outputs to:", outdir)
+    return outdir
+
+
+def ensure_outdir(args, reco_tag: str, mode_tag: str = "") -> Path:
+    """
+    Ensure output directory exists based on args.
+
+    Args:
+        args: Argument namespace with input_csv, outdir, and tag attributes
+        reco_tag: Reconstruction type tag
+        mode_tag: Mode tag (optional)
+
+    Returns:
+        Path to output directory
+    """
+    base = Path(args.outdir) if args.outdir else args.input_csv.parent
+    prefixed_base = base.parent / f"{base.name}"
+    return timestamped_outdir(prefixed_base, reco_tag, mode_tag, args.tag)
+
+
+def sanitize_and_load_csv(
+    input_csv: Path,
+    x_cols: Optional[List[str]] = None
+) -> Tuple[pd.DataFrame, List[str]]:
+    """
+    Load CSV and sanitize data.
+
+    Handles truth position column detection/renaming, drops invalid rows,
+    computes total_signal and log_total_signal.
+
+    Args:
+        input_csv: Path to input CSV file
+        x_cols: Optional list of detector column names. If None, auto-detects det_#_max columns
+
+    Returns:
+        Tuple of (sanitized dataframe, list of present detector columns)
+    """
+    df = pd.read_csv(input_csv)
+    df = df.replace([np.inf, -np.inf], np.nan)
+
+    # Detect or validate true position columns
+    if {"truex", "truey", "truez"}.issubset(df.columns):
+        target_cols = ["truex", "truey", "truez"]
+    elif {"x_wmean_redef2", "y_wmean_int", "z_wmean_redef2"}.issubset(df.columns):
+        df = df.rename(columns={
+            "x_wmean_redef2": "truex",
+            "y_wmean_int": "truey",
+            "z_wmean_redef2": "truez"
+        })
+        target_cols = ["truex", "truey", "truez"]
+    else:
+        raise ValueError("No valid true position columns found")
+
+    # Drop rows with missing targets
+    n_before = len(df)
+    df = df.dropna(subset=target_cols, how="any").reset_index(drop=True)
+    print(f"Dropped {n_before - len(df)} rows missing true positions")
+
+    # Auto-detect or use provided detector columns
+    if x_cols is None:
+        x_cols = [f"det_{i}_max" for i in range(16)]
+
+    present_x_cols = [c for c in x_cols if c in df.columns]
+    if not present_x_cols:
+        raise ValueError("No detector amplitude columns like det_#_max found")
+
+    df[present_x_cols] = df[present_x_cols].fillna(0.0)
+
+    # Compute total signal
+    df["total_signal"] = df[present_x_cols].sum(axis=1)
+    n_before = len(df)
+    df = df[df["total_signal"] > 0.0].reset_index(drop=True)
+    print(f"Dropped {n_before - len(df)} rows with zero total signal")
+
+    df["log_total_signal"] = np.log10(df["total_signal"])
+
+    return df, present_x_cols

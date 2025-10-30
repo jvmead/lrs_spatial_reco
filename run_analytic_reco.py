@@ -42,6 +42,9 @@ from utils import (
     compute_module_centres,
     compute_detector_offsets,
     extract_pde_per_detector,
+    timestamped_outdir,
+    ensure_outdir,
+    sanitize_and_load_csv,
 )
 
 # Import plotting and diagnostics from plotting module
@@ -60,56 +63,7 @@ from plotting import (
 DEFAULT_1D_VARS = ["truex", "truey", "truez", "dr", "total_signal"]
 HEATMAP_INDEP_VARS = ["truex", "truey", "truez", "total_signal"]
 
-# ---------- small utils ----------
-
-def timestamped_outdir(base_dir: Path, mode_tag: str, tag: Optional[str]) -> Path:
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-    parts = [f"outputs_{mode_tag}"]
-    if tag:
-        parts.append(tag)
-    parts.append(ts)
-    out_name = "_".join(parts)
-    outdir = base_dir / out_name
-    outdir.mkdir(parents=True, exist_ok=False)
-    print("Saving outputs to:", outdir)
-    return outdir
-
-
-def ensure_outdir(args, mode_tag: str) -> Path:
-    base = Path(args.outdir) if args.outdir else args.input_csv.parent
-    prefixed_base = base.parent / f"analytic_reco_{base.name}"
-    return timestamped_outdir(prefixed_base, mode_tag, args.tag)
-
-
-def sanitize_and_load_csv(input_csv: Path, x_cols: List[str]) -> Tuple[pd.DataFrame, List[str]]:
-    df = pd.read_csv(input_csv)
-    df = df.replace([np.inf, -np.inf], np.nan)
-
-    required_truth = {"truex", "truey", "truez"}
-    missing_truth = required_truth - set(df.columns)
-    if missing_truth:
-        raise ValueError(f"Missing required truth columns: {sorted(missing_truth)}")
-
-    n_before = len(df)
-    df = df.dropna(subset=["truex", "truey", "truez"], how="any").reset_index(drop=True)
-    print(f"Dropped {n_before - len(df)} rows missing true positions")
-
-    present_x_cols = [c for c in x_cols if c in df.columns]
-    if not present_x_cols:
-        raise ValueError("No detector amplitude columns like det_#_max found.")
-    df[present_x_cols] = df[present_x_cols].fillna(0.0)
-
-    df["total_signal"] = df[present_x_cols].sum(axis=1)
-    n_before = len(df)
-    df = df[df["total_signal"] > 0.0].reset_index(drop=True)
-    print(f"Dropped {n_before - len(df)} rows with zero total signal")
-    df["log_total_signal"] = np.log10(df["total_signal"])
-
-    return df, present_x_cols
-
-
-# Note: load_hdf_geometry and build_detector_positions now imported from utils
-
+# ---------- Analytic-specific reconstruction ----------
 
 def compute_predictions(
     df: pd.DataFrame,
@@ -660,16 +614,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         eff_per_det=eff_per_det,
     )
 
+    # Create output directory if needed
+    outdir: Optional[Path] = None
+    if need_outdir:
+        mode_tag = "uw" if args.uw else "pde"
+        outdir = ensure_outdir(args, "analytic_reco", mode_tag)
+
     # Create output distribution plots
     need_outdir = bool(
         args.save or args.export_1d_over or args.export_1d_all or
         args.plot_2d_heatmaps or args.plot_1d_over or args.plot_1d_all or
         args.plot_distributions or args.plot_3d_displays
     )
-    outdir: Optional[Path] = None
-    if need_outdir:
-        mode_tag = "uw" if args.uw else "pde"
-        outdir = ensure_outdir(args, mode_tag)
 
     if args.plot_distributions and outdir is not None:
         # Compute residuals first
@@ -709,7 +665,6 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             y_pred_col="predy",
             z_pred_col="predz",
             tpc_bounds_mm=tpc_bounds_mm,
-            include_log_signal=False,
             out_file=outdir / "output_distributions.png",
             title_prefix="",
             label_true="true",
@@ -742,12 +697,6 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             out_file=outdir / "residual_corner.png",
         )
         print(f"Saved: {outdir / 'residual_corner.png'}")
-
-    if not need_outdir:
-        outdir = None
-        if args.save:
-            mode_tag = "uw" if args.uw else "pde"
-            outdir = ensure_outdir(args, mode_tag)
 
     if args.save and outdir is not None:
         out_df = df_pred[["predx", "predy", "predz"]].copy()
@@ -789,9 +738,6 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return m.get(var, args.bins_x)
 
     if export_vars:
-        if outdir is None:
-            mode_tag = "uw" if args.uw else "pde"
-            outdir = ensure_outdir(args, mode_tag)
         residuals_dir = outdir / "residuals_1d"
         residuals_dir.mkdir(exist_ok=True)
         for var in export_vars:
@@ -805,9 +751,6 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             print("Wrote:", path)
 
     if args.plot_2d_heatmaps:
-        if outdir is None:
-            mode_tag = "uw" if args.uw else "pde"
-            outdir = ensure_outdir(args, mode_tag)
         bins_map = {
             "truex": args.bins_x,
             "truey": args.bins_y,
@@ -822,9 +765,6 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         plot_pred_vs_true_xyz(df_pred, outdir=outdir, bins_map=bins_map_xyz)
 
     if plot1d_vars:
-        if outdir is None:
-            mode_tag = "uw" if args.uw else "pde"
-            outdir = ensure_outdir(args, mode_tag)
         for var in plot1d_vars:
             if var == "tot_signal":
                 var = "total_signal"

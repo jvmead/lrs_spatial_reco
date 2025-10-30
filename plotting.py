@@ -150,20 +150,18 @@ def plot_spatial_distributions(
     y_pred_col: Optional[str] = None,
     z_pred_col: Optional[str] = None,
     tpc_bounds_mm: Optional[np.ndarray] = None,
-    include_log_signal: bool = True,
     out_file: Optional[Path] = None,
     title_prefix: str = "",
     label_true: str = "true",
     label_pred: str = "pred",
 ) -> None:
     """Backwards compatibility wrapper for plot_distributions."""
-    w_col = "total_signal" if (include_log_signal and "total_signal" in df.columns) else None
     plot_distributions(
         df=df,
         x_col=x_true_col,
         y_col=y_true_col,
         z_col=z_true_col,
-        w_col=w_col,
+        w_col=None,
         x_col2=x_pred_col,
         y_col2=y_pred_col,
         z_col2=z_pred_col,
@@ -427,6 +425,101 @@ def plot_detector_signals(
 
         # Add small legend
         if col_name in df.columns and len(data) > 0:
+            ax.legend(fontsize=6, loc='upper right', framealpha=0.7)
+
+    plt.tight_layout()
+
+    if out_file:
+        plt.savefig(out_file, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"Saved: {out_file}")
+    else:
+        plt.show()
+
+
+def plot_detector_log_signals(
+    df: pd.DataFrame,
+    out_file: Optional[Path] = None,
+    bins: int = 50,
+) -> None:
+    """
+    Plot log10-transformed detector signal distributions in a 2-column layout.
+
+    This function creates log10(det_#_max + 1) for each detector and plots the
+    distributions. Useful for preprocessing stage to visualize raw detector signals
+    before reconstruction.
+
+    Layout: Detectors 0-7 in left column (bottom to top), 8-15 in right column (bottom to top).
+
+    Args:
+        df: DataFrame with det_0_max through det_15_max columns
+        out_file: Output file path (if None, displays interactively)
+        bins: Number of histogram bins (default: 50)
+    """
+    det_cols = [f"det_{i}_max" for i in range(16)]
+
+    # Check which columns exist
+    available_cols = [c for c in det_cols if c in df.columns]
+    if not available_cols:
+        print("Warning: No detector columns found (det_#_max)")
+        return
+
+    # Create 2-column layout: 8 rows x 2 columns
+    fig, axes = plt.subplots(8, 2, figsize=(10, 20))
+    fig.suptitle("Detector Signal Distributions (log10 scale)", fontsize=14, y=0.995)
+
+    # Use a consistent color for all detectors
+    hist_color = 'steelblue'
+
+    for i in range(16):
+        # Layout: det 0-7 in left column (row 7 to 0), det 8-15 in right column (row 7 to 0)
+        if i < 8:
+            col = 0
+            row = 7 - i  # det 0 at bottom (row 7), det 7 at top (row 0)
+        else:
+            col = 1
+            row = 7 - (i - 8)  # det 8 at bottom (row 7), det 15 at top (row 0)
+
+        ax = axes[row, col]
+
+        col_name = f"det_{i}_max"
+        if col_name in df.columns:
+            data = df[col_name].values
+            # Remove NaN and inf
+            data = data[np.isfinite(data)]
+            # Apply log10(x + 1) transformation to handle zeros
+            data_log = np.log10(data + 1)
+
+            if len(data_log) > 0:
+                # Create histogram
+                ax.hist(data_log, bins=bins, alpha=0.7, color=hist_color, edgecolor='none')
+
+                # Add statistics text (on log scale)
+                mean_val = np.mean(data_log)
+                median_val = np.median(data_log)
+                ax.axvline(mean_val, color='red', linestyle='--', linewidth=1, alpha=0.7,
+                          label=f'μ={mean_val:.2f}')
+                ax.axvline(median_val, color='orange', linestyle=':', linewidth=1, alpha=0.7,
+                          label=f'med={median_val:.2f}')
+            else:
+                ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.5, 'Missing', ha='center', va='center', transform=ax.transAxes)
+
+        # Title
+        ax.set_title(f"Det {i}", fontsize=9)
+        ax.tick_params(labelsize=7)
+
+        # Only show x-label on bottom row
+        if row == 7:
+            ax.set_xlabel("log10(Signal + 1)", fontsize=8)
+
+        # Only show y-label on leftmost column
+        if col == 0:
+            ax.set_ylabel("Count", fontsize=8)
+
+        # Add small legend
+        if col_name in df.columns and len(data_log) > 0:
             ax.legend(fontsize=6, loc='upper right', framealpha=0.7)
 
     plt.tight_layout()

@@ -35,7 +35,7 @@ from utils import (
     load_hdf_geometry,
     compute_module_centres,
 )
-from plotting import plot_spatial_distributions, plot_3d_event_displays
+from plotting import plot_spatial_distributions, plot_3d_event_displays, plot_detector_log_signals
 
 
 def load_or_build_tpc_bounds(out_geom_dir, fallback_hdf5):
@@ -192,13 +192,23 @@ def main():
             y_pred_col="truey",
             z_pred_col="truez",
             tpc_bounds_mm=tpc_bounds_mm,
-            include_log_signal=True,
             out_file=out_plot,
             title_prefix="",
             label_true="raw",
             label_pred="tsfm",
         )
         logging.info("Wrote histogram: %s", out_plot)
+
+        # Plot detector log signals (8x2 layout) if detector columns exist
+        det_cols = [f"det_{i}_max" for i in range(16)]
+        if all(col in df_new.columns for col in det_cols):
+            out_det_plot = out_dir / "detector_log_signals.png"
+            plot_detector_log_signals(
+                df=df_new,
+                out_file=out_det_plot,
+                bins=50,
+            )
+            logging.info("Wrote detector log signal plot: %s", out_det_plot)
 
         # Generate 3D event displays for min, median, max total_signal
         if has_total_signal:
