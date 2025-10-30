@@ -135,127 +135,91 @@ def get_model_label(model_dir, manifest):
 
 # ==================== PLOTTING FUNCTIONS ====================
 
-def plot_sigma_comparison(
-    data,
-    variable,
-    outdir,
-    residual_cols=None,
-):
-    """
-    Plot σ (standard deviation) comparison for multiple models.
+def plot_dr_vs_spatial(data, variable, outdir):
+    """Plot dr sigma and mu as function of true x, y, z."""
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
-    Args:
-        data: Dictionary mapping model_key to (dataframe, label)
-        variable: Independent variable name
-        outdir: Output directory
-        residual_cols: List of residual sigma columns to plot
-    """
-    if residual_cols is None:
-        residual_cols = ["dx_sig", "dy_sig", "dz_sig", "dr_sig"]
-
-    fig, axes = plt.subplots(1, len(residual_cols), figsize=(5*len(residual_cols), 4))
-    if len(residual_cols) == 1:
-        axes = [axes]
-
-    # Color palette
     colors = plt.cm.tab10(range(len(data)))
-
     xscale = "log" if variable == "total_signal" else "linear"
 
-    for ax_idx, resid_col in enumerate(residual_cols):
-        ax = axes[ax_idx]
-        resid_name = resid_col.replace("_sig", "")  # dx_sig -> dx
+    # Sigma plot
+    for (model_key, (df, label)), color in zip(data.items(), colors):
+        axes[0].plot(df["bin_x"], df["dr_sig"], marker="o", label=label,
+                    alpha=0.7, linewidth=2, color=color)
+    axes[0].set_xlabel(variable)
+    axes[0].set_ylabel("σ(dr) [cm]")
+    axes[0].set_title(f"3D Resolution vs {variable}")
+    axes[0].legend(fontsize=9)
+    axes[0].grid(True, alpha=0.3)
+    if xscale == "log":
+        axes[0].set_xscale("log")
+    axes[0].set_ylim(bottom=0)
 
-        for (model_key, (df, label)), color in zip(data.items(), colors):
-            if resid_col in df.columns:
-                # Plot with error bars if available
-                err_col = resid_col + "_err"
-                if err_col in df.columns:
-                    ax.errorbar(
-                        df["bin_x"], df[resid_col], yerr=df[err_col],
-                        label=label, alpha=0.7, linewidth=2, capsize=3, color=color
-                    )
-                else:
-                    ax.plot(df["bin_x"], df[resid_col], label=label,
-                           linewidth=2, alpha=0.8, color=color)
-
-        ax.set_xlabel(variable)
-        ax.set_ylabel(f"σ({resid_name}) [cm]")
-        ax.set_title(f"{resid_name.upper()} Resolution vs {variable}")
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-        if xscale == "log":
-            ax.set_xscale("log")
-
-        # Set y-axis minimum to 0 for dr sigma
-        if resid_name == "dr":
-            ax.set_ylim(bottom=0)
+    # Mu plot
+    for (model_key, (df, label)), color in zip(data.items(), colors):
+        axes[1].plot(df["bin_x"], df["dr_mu"], marker="o", label=label,
+                    alpha=0.7, linewidth=2, color=color)
+    axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
+    axes[1].set_xlabel(variable)
+    axes[1].set_ylabel("μ(dr) [cm]")
+    axes[1].set_title(f"3D Bias vs {variable}")
+    axes[1].legend(fontsize=9)
+    axes[1].grid(True, alpha=0.3)
+    if xscale == "log":
+        axes[1].set_xscale("log")
 
     plt.tight_layout()
-    outfile = outdir / f"compare_sigma_vs_{variable}.png"
-    plt.savefig(outfile, dpi=150, bbox_inches='tight')
+    outfile = outdir / f"dr_vs_{variable}.png"
+    plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
 
 
-def plot_mu_comparison(
-    data: Dict[str, Tuple[pd.DataFrame, str]],
-    variable: str,
-    outdir: Path,
-    residual_cols: List[str] = ["dx_mu", "dy_mu", "dz_mu", "dr_mu"],
-):
-    """
-    Plot σ (standard deviation) comparison for multiple models.
+def plot_residual_vs_true(data, variable, component, outdir):
+    """Plot d{component} sigma and mu as function of true{component}.
 
     Args:
-        data: Dictionary mapping model_key to (dataframe, label)
-        variable: Independent variable name
-        outdir: Output directory
-        residual_cols: List of residual sigma columns to plot
+        component: 'x', 'y', or 'z'
     """
-    if residual_cols is None:
-        residual_cols = ["dx_sig", "dy_sig", "dz_sig", "dr_sig"]
-
-    fig, axes = plt.subplots(1, len(residual_cols), figsize=(5*len(residual_cols), 4))
-    if len(residual_cols) == 1:
-        axes = [axes]
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     colors = plt.cm.tab10(range(len(data)))
     xscale = "log" if variable == "total_signal" else "linear"
 
-    for ax_idx, resid_col in enumerate(residual_cols):
-        ax = axes[ax_idx]
-        resid_name = resid_col.replace("_mu", "")  # dx_mu -> dx
+    sigma_col = f"d{component}_sig"
+    mu_col = f"d{component}_mu"
 
-        for (model_key, (df, label)), color in zip(data.items(), colors):
-            if resid_col in df.columns:
-                # Plot with error bars if available
-                err_col = resid_col + "_err"
-                if err_col in df.columns:
-                    ax.errorbar(
-                        df["bin_x"], df[resid_col], yerr=df[err_col],
-                        label=label, alpha=0.7, linewidth=2, capsize=3, color=color
-                    )
-                else:
-                    ax.plot(df["bin_x"], df[resid_col], label=label,
-                           linewidth=2, alpha=0.8, color=color)
+    # Sigma plot
+    for (model_key, (df, label)), color in zip(data.items(), colors):
+        if sigma_col in df.columns:
+            axes[0].plot(df["bin_x"], df[sigma_col], marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
+    axes[0].set_xlabel(variable)
+    axes[0].set_ylabel(f"σ(d{component}) [cm]")
+    axes[0].set_title(f"{component.upper()}-Resolution vs {variable}")
+    axes[0].legend(fontsize=9)
+    axes[0].grid(True, alpha=0.3)
+    if xscale == "log":
+        axes[0].set_xscale("log")
+    axes[0].set_ylim(bottom=0)
 
-        # Add zero reference line
-        ax.axhline(0, color='black', linestyle='--', linewidth=1, alpha=0.5)
-
-        ax.set_xlabel(variable)
-        ax.set_ylabel(f"μ({resid_name}) [cm]")
-        ax.set_title(f"{resid_name.upper()} Bias vs {variable}")
-        ax.legend(fontsize=8)
-        ax.grid(True, alpha=0.3)
-
-        if xscale == "log":
-            ax.set_xscale("log")
+    # Mu plot
+    for (model_key, (df, label)), color in zip(data.items(), colors):
+        if mu_col in df.columns:
+            axes[1].plot(df["bin_x"], df[mu_col], marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
+    axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
+    axes[1].set_xlabel(variable)
+    axes[1].set_ylabel(f"μ(d{component}) [cm]")
+    axes[1].set_title(f"{component.upper()}-Bias vs {variable}")
+    axes[1].legend(fontsize=9)
+    axes[1].grid(True, alpha=0.3)
+    if xscale == "log":
+        axes[1].set_xscale("log")
 
     plt.tight_layout()
-    outfile = outdir / f"compare_mu_vs_{variable}.png"
-    plt.savefig(outfile, dpi=150, bbox_inches='tight')
+    outfile = outdir / f"d{component}_vs_{variable}.png"
+    plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
 
@@ -339,49 +303,44 @@ def plot_summary_table(
     print(f"Saved: {outfile}")
 
 
-def plot_combined_sigma(
-    data,
-    variable,
-    outdir,
-):
-    """
-    Plot all σ values (dx, dy, dz, dr) for each model on a single plot.
+def plot_pred_vs_true(data, variable, component, outdir):
+    """Plot pred{component} as function of true{variable}.
+
+    Shows predicted coordinate vs true binned coordinate.
 
     Args:
-        data: Dictionary mapping model_key to (dataframe, label)
-        variable: Independent variable name
-        outdir: Output directory
+        component: 'x', 'y', or 'z'
     """
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(8, 6))
 
     colors = plt.cm.tab10(range(len(data)))
-    linestyles = ['-', '--', '-.', ':']
-    residual_cols = ["dx_sig", "dy_sig", "dz_sig", "dr_sig"]
-    residual_labels = ["σ(dx)", "σ(dy)", "σ(dz)", "σ(dr)"]
-
     xscale = "log" if variable == "total_signal" else "linear"
 
-    for model_idx, ((model_key, (df, label)), color) in enumerate(zip(data.items(), colors)):
-        for resid_idx, (resid_col, resid_label) in enumerate(zip(residual_cols, residual_labels)):
-            if resid_col in df.columns:
-                linestyle = linestyles[resid_idx % len(linestyles)]
-                plot_label = f"{label} - {resid_label}"
-                ax.plot(df["bin_x"], df[resid_col], label=plot_label,
-                       linewidth=2, alpha=0.7, color=color, linestyle=linestyle)
+    mu_col = f"d{component}_mu"
+
+    # For pred vs true, we calculate pred from true + mu (since mu = pred - true)
+    for (model_key, (df, label)), color in zip(data.items(), colors):
+        if mu_col in df.columns:
+            pred_vals = df["bin_x"] + df[mu_col]
+            ax.plot(df["bin_x"], pred_vals, marker="o", label=label,
+                   alpha=0.7, linewidth=2, color=color)
+
+    # Add perfect prediction line (y=x)
+    xlim = ax.get_xlim()
+    ax.plot(xlim, xlim, 'k--', linewidth=1, alpha=0.5, label='Perfect')
+    ax.set_xlim(xlim)
 
     ax.set_xlabel(variable)
-    ax.set_ylabel("Resolution σ [cm]")
-    ax.set_title(f"All Resolution Components vs {variable}")
-    ax.legend(fontsize=7, ncol=2)
+    ax.set_ylabel(f"pred{component} [cm]")
+    ax.set_title(f"Predicted vs True: {component.upper()} coordinate (binned by {variable})")
+    ax.legend(fontsize=9)
     ax.grid(True, alpha=0.3)
-    ax.set_ylim(bottom=0)
-
     if xscale == "log":
         ax.set_xscale("log")
 
     plt.tight_layout()
-    outfile = outdir / f"compare_all_sigma_vs_{variable}.png"
-    plt.savefig(outfile, dpi=150, bbox_inches='tight')
+    outfile = outdir / f"pred{component}_vs_{variable}.png"
+    plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
 
@@ -421,9 +380,21 @@ def compare_models_for_variable(
         return
 
     # Generate plots
-    plot_sigma_comparison(data, variable, outdir)
-    plot_mu_comparison(data, variable, outdir)
-    plot_combined_sigma(data, variable, outdir)
+    # 1. dr sigma & mu vs the variable (always generated)
+    plot_dr_vs_spatial(data, variable, outdir)
+
+    # 2. d{component} vs true{component} (only if variable matches a spatial coord)
+    if variable in ["truex", "x"]:
+        plot_residual_vs_true(data, variable, "x", outdir)
+        plot_pred_vs_true(data, variable, "x", outdir)
+    elif variable in ["truey", "y"]:
+        plot_residual_vs_true(data, variable, "y", outdir)
+        plot_pred_vs_true(data, variable, "y", outdir)
+    elif variable in ["truez", "z"]:
+        plot_residual_vs_true(data, variable, "z", outdir)
+        plot_pred_vs_true(data, variable, "z", outdir)
+
+    # 3. Summary table (always generated)
     plot_summary_table(data, variable, outdir)
 
 

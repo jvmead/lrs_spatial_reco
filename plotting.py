@@ -746,6 +746,25 @@ def plot_pred_vs_true_xyz(df_pred: pd.DataFrame, outdir: Path, bins_map: dict) -
         ax.set_ylabel(f"pred{label}")
         lo = float(min(edges[0], edges[-1])); hi = float(max(edges[0], edges[-1]))
         ax.plot([lo, hi], [lo, hi], linestyle="--", color="white", linewidth=1.2, label="y = x")
+
+        # Add quantile lines per x-bin (like plot_heatmaps_resid_vs_vars)
+        x_left_edges = edges[:-1]
+        y_upper, y_centre, y_lower = [], [], []
+        for j in range(len(edges) - 1):
+            mask = (x_true >= edges[j]) & (x_true < edges[j + 1])
+            yvals = x_pred[mask]
+            if len(yvals) > 0:
+                y_upper.append(np.nanquantile(yvals, 0.84))
+                y_centre.append(np.nanquantile(yvals, 0.5))
+                y_lower.append(np.nanquantile(yvals, 0.16))
+            else:
+                y_upper.append(np.nan)
+                y_centre.append(np.nan)
+                y_lower.append(np.nan)
+        ax.step(x_left_edges, y_upper, color="red", linestyle="--", linewidth=1.2, where="post", label="68% band")
+        ax.step(x_left_edges, y_centre, color="red", linestyle=":",  linewidth=1.2, where="post", label="Median")
+        ax.step(x_left_edges, y_lower, color="red", linestyle="--", linewidth=1.2, where="post")
+
         ax.legend(loc="best", framealpha=0.6)
         plt.tight_layout()
         # Create subdirectory for pred vs true heatmaps
