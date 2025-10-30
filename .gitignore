@@ -13,6 +13,7 @@ env/
 # Output directories (keep examples)
 processed_outputs_*/
 analytic_reco_*/
+comparison_*/
 !examples/
 
 # Data files
