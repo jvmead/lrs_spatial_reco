@@ -104,6 +104,329 @@ def load_1d_residuals(model_dir, variable):
     return pd.read_csv(resid_file)
 
 
+def load_predictions_with_quantiles(model_dir, variable, component):
+    """
+    Load raw predictions and compute quantile bands for pred vs true plot.
+
+    Args:
+        model_dir: Path to reconstruction output directory
+        variable: Variable name (truex, truey, truez, total_signal)
+        component: Component to predict ('x', 'y', or 'z')
+
+    Returns:
+        DataFrame with columns: bin_center, pred_median, pred_q16, pred_q84
+        or None if data not available
+    """
+    pred_file = model_dir / "predictions" / "predictions.csv.gz"
+
+    if not pred_file.exists():
+        return None
+
+    try:
+        # Load raw predictions
+        df = pd.read_csv(pred_file)
+
+        # Check required columns exist
+        true_col = f"true{component}"
+        pred_col = f"pred{component}"
+
+        # Check if truth columns are already in predictions file (GNN format)
+        has_truth = true_col in df.columns and variable in df.columns
+
+        if not has_truth:
+            # Need to load and merge truth data (Analytic format)
+            manifest = load_manifest(model_dir)
+            input_csv = manifest.get("input_csv") or manifest.get("processed_csv")
+
+            if not input_csv:
+                return None
+
+            # Resolve input CSV path
+            input_path = Path(input_csv)
+            if not input_path.is_absolute():
+                if input_path.exists():
+                    pass
+                elif (model_dir.parent / input_csv).exists():
+                    input_path = model_dir.parent / input_csv
+                elif (model_dir.parent / input_path.name).exists():
+                    input_path = model_dir.parent / input_path.name
+                else:
+                    parts = input_path.parts
+                    if len(parts) > 1 and parts[0] == model_dir.parent.name:
+                        input_path = model_dir.parent / parts[-1]
+
+            if not input_path.exists():
+                return None
+
+            # Load input truth data
+            needed_cols = [f"true{component}", variable]
+            if variable != "total_signal":
+                needed_cols.append("total_signal")
+            df_truth = pd.read_csv(input_path, usecols=needed_cols)
+
+            # Apply same filtering as reconstruction
+            df_truth = df_truth[df_truth["total_signal"] > 0].reset_index(drop=True)
+
+            # Merge
+            if len(df) != len(df_truth):
+                if len(df) < len(df_truth):
+                    df_truth = df_truth.iloc[:len(df)].reset_index(drop=True)
+                else:
+                    return None
+
+            df = pd.concat([df_truth.reset_index(drop=True),
+                           df.reset_index(drop=True)], axis=1)
+
+        # Verify columns
+        if true_col not in df.columns or pred_col not in df.columns or variable not in df.columns:
+            return None
+
+        # Determine binning strategy
+        if variable == "total_signal":
+            var_data = df[variable].values
+            log_var = np.log10(var_data + 1e-10)
+            bins = np.linspace(log_var.min(), log_var.max(), 25)
+            df['bin_idx'] = pd.cut(log_var, bins=bins, labels=False)
+            bin_centers = 10 ** ((bins[:-1] + bins[1:]) / 2)
+        else:
+            var_data = df[variable].values
+            bins = np.linspace(var_data.min(), var_data.max(), 25)
+            df['bin_idx'] = pd.cut(var_data, bins=bins, labels=False)
+            bin_centers = (bins[:-1] + bins[1:]) / 2
+
+        # Compute quantiles per bin
+        quantiles = df.groupby('bin_idx')[pred_col].quantile([0.16, 0.5, 0.84]).unstack()
+        quantiles.columns = ['pred_q16', 'pred_median', 'pred_q84']
+        quantiles['bin_center'] = bin_centers[:len(quantiles)]
+
+        return quantiles.reset_index(drop=True)
+
+    except Exception as e:
+        return None
+
+
+def load_residuals_with_quantiles(model_dir, variable, component):
+    """
+    Load raw predictions and compute residual quantile bands.
+
+    Args:
+        model_dir: Path to reconstruction output directory
+        variable: Variable name (truex, truey, truez, total_signal)
+        component: Component to compute residuals for ('x', 'y', or 'z')
+
+    Returns:
+        DataFrame with columns: bin_center, resid_median, resid_q16, resid_q84, sigma, mu
+        or None if data not available
+    """
+    pred_file = model_dir / "predictions" / "predictions.csv.gz"
+
+    if not pred_file.exists():
+        return None
+
+    try:
+        # Load raw predictions
+        df = pd.read_csv(pred_file)
+
+        # Check required columns exist
+        true_col = f"true{component}"
+        pred_col = f"pred{component}"
+
+        # Check if truth columns are already in predictions file (GNN format)
+        has_truth = true_col in df.columns and variable in df.columns
+
+        if not has_truth:
+            # Need to load and merge truth data (Analytic format)
+            manifest = load_manifest(model_dir)
+            input_csv = manifest.get("input_csv") or manifest.get("processed_csv")
+
+            if not input_csv:
+                return None
+
+            # Resolve input CSV path
+            input_path = Path(input_csv)
+            if not input_path.is_absolute():
+                if input_path.exists():
+                    pass
+                elif (model_dir.parent / input_csv).exists():
+                    input_path = model_dir.parent / input_csv
+                elif (model_dir.parent / input_path.name).exists():
+                    input_path = model_dir.parent / input_path.name
+                else:
+                    parts = input_path.parts
+                    if len(parts) > 1 and parts[0] == model_dir.parent.name:
+                        input_path = model_dir.parent / parts[-1]
+
+            if not input_path.exists():
+                return None
+
+            # Load input truth data
+            needed_cols = [f"true{component}", variable]
+            if variable != "total_signal":
+                needed_cols.append("total_signal")
+            df_truth = pd.read_csv(input_path, usecols=needed_cols)
+
+            # Apply same filtering as reconstruction
+            df_truth = df_truth[df_truth["total_signal"] > 0].reset_index(drop=True)
+
+            # Merge
+            if len(df) != len(df_truth):
+                if len(df) < len(df_truth):
+                    df_truth = df_truth.iloc[:len(df)].reset_index(drop=True)
+                else:
+                    return None
+
+            df = pd.concat([df_truth.reset_index(drop=True),
+                           df.reset_index(drop=True)], axis=1)
+
+        # Verify columns
+        if true_col not in df.columns or pred_col not in df.columns or variable not in df.columns:
+            return None
+
+        # Compute residuals
+        df[f'd{component}'] = df[pred_col] - df[true_col]
+
+        # Determine binning strategy
+        if variable == "total_signal":
+            var_data = df[variable].values
+            log_var = np.log10(var_data + 1e-10)
+            bins = np.linspace(log_var.min(), log_var.max(), 25)
+            df['bin_idx'] = pd.cut(log_var, bins=bins, labels=False)
+            bin_centers = 10 ** ((bins[:-1] + bins[1:]) / 2)
+        else:
+            var_data = df[variable].values
+            bins = np.linspace(var_data.min(), var_data.max(), 25)
+            df['bin_idx'] = pd.cut(var_data, bins=bins, labels=False)
+            bin_centers = (bins[:-1] + bins[1:]) / 2
+
+        # Compute quantiles AND mean/std per bin
+        resid_col = f'd{component}'
+        grouped = df.groupby('bin_idx')[resid_col]
+
+        quantiles = grouped.quantile([0.16, 0.5, 0.84]).unstack()
+        quantiles.columns = ['resid_q16', 'resid_median', 'resid_q84']
+
+        # Add mean and std for comparison with existing plots
+        quantiles['mu'] = grouped.mean().values
+        quantiles['sigma'] = grouped.std().values
+        quantiles['count'] = grouped.count().values  # Number of samples per bin
+        quantiles['bin_center'] = bin_centers[:len(quantiles)]
+
+        return quantiles.reset_index(drop=True)
+
+    except Exception as e:
+        return None
+
+
+def load_dr_residuals_with_quantiles(model_dir, variable):
+    """
+    Load raw predictions and compute 3D residual (dr) quantile bands.
+
+    Args:
+        model_dir: Path to reconstruction output directory
+        variable: Variable name (truex, truey, truez, total_signal)
+
+    Returns:
+        DataFrame with columns: bin_center, dr_median, dr_q16, dr_q84, sigma, mu
+        or None if data not available
+    """
+    pred_file = model_dir / "predictions" / "predictions.csv.gz"
+
+    if not pred_file.exists():
+        return None
+
+    try:
+        # Load raw predictions
+        df = pd.read_csv(pred_file)
+
+        # Check if truth columns are already in predictions file (GNN format)
+        has_truth = all(col in df.columns for col in ['truex', 'truey', 'truez', variable])
+
+        if not has_truth:
+            # Need to load and merge truth data (Analytic format)
+            manifest = load_manifest(model_dir)
+            input_csv = manifest.get("input_csv") or manifest.get("processed_csv")
+
+            if not input_csv:
+                return None
+
+            # Resolve input CSV path
+            input_path = Path(input_csv)
+            if not input_path.is_absolute():
+                if input_path.exists():
+                    pass
+                elif (model_dir.parent / input_csv).exists():
+                    input_path = model_dir.parent / input_csv
+                elif (model_dir.parent / input_path.name).exists():
+                    input_path = model_dir.parent / input_path.name
+                else:
+                    parts = input_path.parts
+                    if len(parts) > 1 and parts[0] == model_dir.parent.name:
+                        input_path = model_dir.parent / parts[-1]
+
+            if not input_path.exists():
+                return None
+
+            # Load input truth data
+            needed_cols = ['truex', 'truey', 'truez', variable]
+            if variable != "total_signal":
+                needed_cols.append("total_signal")
+            df_truth = pd.read_csv(input_path, usecols=needed_cols)
+
+            # Apply same filtering as reconstruction
+            df_truth = df_truth[df_truth["total_signal"] > 0].reset_index(drop=True)
+
+            # Merge
+            if len(df) != len(df_truth):
+                if len(df) < len(df_truth):
+                    df_truth = df_truth.iloc[:len(df)].reset_index(drop=True)
+                else:
+                    return None
+
+            df = pd.concat([df_truth.reset_index(drop=True),
+                           df.reset_index(drop=True)], axis=1)
+
+        # Verify columns
+        required = ['truex', 'truey', 'truez', 'predx', 'predy', 'predz', variable]
+        if not all(col in df.columns for col in required):
+            return None
+
+        # Compute 3D residuals
+        df['dx'] = df['predx'] - df['truex']
+        df['dy'] = df['predy'] - df['truey']
+        df['dz'] = df['predz'] - df['truez']
+        df['dr'] = np.sqrt(df['dx']**2 + df['dy']**2 + df['dz']**2)
+
+        # Determine binning strategy
+        if variable == "total_signal":
+            var_data = df[variable].values
+            log_var = np.log10(var_data + 1e-10)
+            bins = np.linspace(log_var.min(), log_var.max(), 25)
+            df['bin_idx'] = pd.cut(log_var, bins=bins, labels=False)
+            bin_centers = 10 ** ((bins[:-1] + bins[1:]) / 2)
+        else:
+            var_data = df[variable].values
+            bins = np.linspace(var_data.min(), var_data.max(), 25)
+            df['bin_idx'] = pd.cut(var_data, bins=bins, labels=False)
+            bin_centers = (bins[:-1] + bins[1:]) / 2
+
+        # Compute quantiles AND mean/std per bin for dr
+        grouped = df.groupby('bin_idx')['dr']
+
+        quantiles = grouped.quantile([0.16, 0.5, 0.84]).unstack()
+        quantiles.columns = ['dr_q16', 'dr_median', 'dr_q84']
+
+        # Add mean and std
+        quantiles['mu'] = grouped.mean().values
+        quantiles['sigma'] = grouped.std().values
+        quantiles['count'] = grouped.count().values  # Number of samples per bin
+        quantiles['bin_center'] = bin_centers[:len(quantiles)]
+
+        return quantiles.reset_index(drop=True)
+
+    except Exception as e:
+        return None
+
+
 def get_model_label(model_dir, manifest):
     """
     Generate a human-readable label for the model.
@@ -135,8 +458,8 @@ def get_model_label(model_dir, manifest):
 
 # ==================== PLOTTING FUNCTIONS ====================
 
-def plot_dr_vs_spatial(data, variable, outdir):
-    """Plot dr sigma and mu as function of true x, y, z."""
+def plot_dr_vs_spatial(data, variable, outdir, model_runs):
+    """Plot dr sigma and mu as function of true x, y, z with quantile bands."""
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
 
     colors = plt.cm.tab10(range(len(data)))
@@ -144,8 +467,24 @@ def plot_dr_vs_spatial(data, variable, outdir):
 
     # Sigma plot
     for (model_key, (df, label)), color in zip(data.items(), colors):
-        axes[0].plot(df["bin_x"], df["dr_sig"], marker="o", label=label,
-                    alpha=0.7, linewidth=2, color=color)
+        # Load raw data statistics first to get uncertainty bands
+        quantile_df = load_dr_residuals_with_quantiles(model_runs[model_key], variable)
+        if quantile_df is not None:
+            x = quantile_df['bin_center']
+            sigma = quantile_df['sigma']
+            count = quantile_df['count']
+            # Standard error of standard deviation: sigma / sqrt(2*N)
+            sigma_error = sigma / np.sqrt(2 * count)
+            # Plot sigma with uncertainty band centered on it
+            axes[0].plot(x, sigma, marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
+            axes[0].fill_between(x, sigma - sigma_error, sigma + sigma_error,
+                               alpha=0.2, color=color)
+        else:
+            # Fallback to binned statistics if raw data unavailable
+            axes[0].plot(df["bin_x"], df["dr_sig"], marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
+
     axes[0].set_xlabel(variable)
     axes[0].set_ylabel("σ(dr) [cm]")
     axes[0].set_title(f"3D Resolution vs {variable}")
@@ -159,6 +498,16 @@ def plot_dr_vs_spatial(data, variable, outdir):
     for (model_key, (df, label)), color in zip(data.items(), colors):
         axes[1].plot(df["bin_x"], df["dr_mu"], marker="o", label=label,
                     alpha=0.7, linewidth=2, color=color)
+
+        # Add quantile bands if available
+        quantile_df = load_dr_residuals_with_quantiles(model_runs[model_key], variable)
+        if quantile_df is not None:
+            x = quantile_df['bin_center']
+            median = quantile_df['dr_median']
+            q16 = quantile_df['dr_q16']
+            q84 = quantile_df['dr_q84']
+            axes[1].fill_between(x, q16, q84, alpha=0.2, color=color)
+
     axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
     axes[1].set_xlabel(variable)
     axes[1].set_ylabel("μ(dr) [cm]")
@@ -175,8 +524,8 @@ def plot_dr_vs_spatial(data, variable, outdir):
     print(f"Saved: {outfile}")
 
 
-def plot_residual_vs_true(data, variable, component, outdir):
-    """Plot d{component} sigma and mu as function of true{component}.
+def plot_residual_vs_true(data, variable, component, outdir, model_runs):
+    """Plot d{component} sigma and mu as function of true{component} with quantile bands.
 
     Args:
         component: 'x', 'y', or 'z'
@@ -191,9 +540,24 @@ def plot_residual_vs_true(data, variable, component, outdir):
 
     # Sigma plot
     for (model_key, (df, label)), color in zip(data.items(), colors):
-        if sigma_col in df.columns:
+        # Load raw data statistics first to get uncertainty bands
+        quantile_df = load_residuals_with_quantiles(model_runs[model_key], variable, component)
+        if quantile_df is not None:
+            x = quantile_df['bin_center']
+            sigma = quantile_df['sigma']
+            count = quantile_df['count']
+            # Standard error of standard deviation: sigma / sqrt(2*N)
+            sigma_error = sigma / np.sqrt(2 * count)
+            # Plot sigma with uncertainty band centered on it
+            axes[0].plot(x, sigma, marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
+            axes[0].fill_between(x, sigma - sigma_error, sigma + sigma_error,
+                               alpha=0.2, color=color)
+        elif sigma_col in df.columns:
+            # Fallback to binned statistics if raw data unavailable
             axes[0].plot(df["bin_x"], df[sigma_col], marker="o", label=label,
                         alpha=0.7, linewidth=2, color=color)
+
     axes[0].set_xlabel(variable)
     axes[0].set_ylabel(f"σ(d{component}) [cm]")
     axes[0].set_title(f"{component.upper()}-Resolution vs {variable}")
@@ -208,6 +572,15 @@ def plot_residual_vs_true(data, variable, component, outdir):
         if mu_col in df.columns:
             axes[1].plot(df["bin_x"], df[mu_col], marker="o", label=label,
                         alpha=0.7, linewidth=2, color=color)
+
+            # Add quantile bands if available
+            quantile_df = load_residuals_with_quantiles(model_runs[model_key], variable, component)
+            if quantile_df is not None:
+                x = quantile_df['bin_center']
+                q16 = quantile_df['resid_q16']
+                q84 = quantile_df['resid_q84']
+                axes[1].fill_between(x, q16, q84, alpha=0.2, color=color)
+
     axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
     axes[1].set_xlabel(variable)
     axes[1].set_ylabel(f"μ(d{component}) [cm]")
@@ -262,49 +635,14 @@ def plot_summary_table(
     df_summary.to_csv(outfile, index=False, float_format="%.3f")
     print(f"Saved: {outfile}")
 
-    # Create text table visualization
-    fig, ax = plt.subplots(figsize=(12, len(summary) * 0.5 + 1))
-    ax.axis('tight')
-    ax.axis('off')
-
-    # Format table
-    table_data = []
-    headers = ["Model", "σ(dx)", "σ(dy)", "σ(dz)", "σ(dr)", "|μ(dx)|", "|μ(dy)|", "|μ(dz)|", "|μ(dr)|"]
-
-    for _, row in df_summary.iterrows():
-        table_data.append([
-            row["Model"],
-            f"{row.get('median_dx_sig', np.nan):.2f}",
-            f"{row.get('median_dy_sig', np.nan):.2f}",
-            f"{row.get('median_dz_sig', np.nan):.2f}",
-            f"{row.get('median_dr_sig', np.nan):.2f}",
-            f"{row.get('mean_abs_dx_mu', np.nan):.2f}",
-            f"{row.get('mean_abs_dy_mu', np.nan):.2f}",
-            f"{row.get('mean_abs_dz_mu', np.nan):.2f}",
-            f"{row.get('mean_abs_dr_mu', np.nan):.2f}",
-        ])
-
-    table = ax.table(cellText=table_data, colLabels=headers,
-                    cellLoc='center', loc='center')
-    table.auto_set_font_size(False)
-    table.set_fontsize(9)
-    table.scale(1, 2)
-
-    # Color header
-    for i in range(len(headers)):
-        table[(0, i)].set_facecolor('#40466e')
-        table[(0, i)].set_text_props(weight='bold', color='white')
-
-    plt.title(f"Summary Statistics vs {variable} (cm)", fontsize=12, pad=20)
-
-    outfile = outdir / f"summary_table_{variable}.png"
-    plt.savefig(outfile, dpi=150, bbox_inches='tight')
-    plt.close()
+    # Print summary to console
+    print(f"\nSummary Statistics for {variable}:")
+    print(df_summary.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
     print(f"Saved: {outfile}")
 
 
-def plot_pred_vs_true(data, variable, component, outdir):
-    """Plot pred{component} as function of true{variable}.
+def plot_pred_vs_true(data, variable, component, outdir, model_runs):
+    """Plot pred{component} as function of true{variable} with quantile bands.
 
     Shows predicted coordinate vs true binned coordinate.
 
@@ -324,6 +662,14 @@ def plot_pred_vs_true(data, variable, component, outdir):
             pred_vals = df["bin_x"] + df[mu_col]
             ax.plot(df["bin_x"], pred_vals, marker="o", label=label,
                    alpha=0.7, linewidth=2, color=color)
+
+            # Add quantile bands if available
+            quantile_df = load_predictions_with_quantiles(model_runs[model_key], variable, component)
+            if quantile_df is not None:
+                x = quantile_df['bin_center']
+                q16 = quantile_df['pred_q16']
+                q84 = quantile_df['pred_q84']
+                ax.fill_between(x, q16, q84, alpha=0.2, color=color)
 
     # Add perfect prediction line (y=x)
     xlim = ax.get_xlim()
@@ -356,7 +702,7 @@ def compare_models_for_variable(
     Generate all comparison plots for a given variable.
 
     Args:
-        model_runs: Dictionary mapping model type to list of output directories
+        model_runs: Dictionary mapping model key to output directory Path
         variable: Independent variable name
         outdir: Output directory
     """
@@ -364,16 +710,14 @@ def compare_models_for_variable(
 
     # Load data from all models
     data = {}
-    for model_type, dirs in model_runs.items():
-        for model_dir in dirs:
-            manifest = load_manifest(model_dir)
-            label = get_model_label(model_dir, manifest)
-            df = load_1d_residuals(model_dir, variable)
+    for model_key, model_dir in model_runs.items():
+        manifest = load_manifest(model_dir)
+        label = get_model_label(model_dir, manifest)
+        df = load_1d_residuals(model_dir, variable)
 
-            if df is not None:
-                key = f"{model_type}_{model_dir.name}"
-                data[key] = (df, label)
-                print(f"  Loaded: {label} ({len(df)} bins)")
+        if df is not None:
+            data[model_key] = (df, label)
+            print(f"  Loaded: {label} ({len(df)} bins)")
 
     if not data:
         print(f"  No data found for variable: {variable}")
@@ -381,20 +725,21 @@ def compare_models_for_variable(
 
     # Generate plots
     # 1. dr sigma & mu vs the variable (always generated)
-    plot_dr_vs_spatial(data, variable, outdir)
+    plot_dr_vs_spatial(data, variable, outdir, model_runs)
 
-    # 2. d{component} vs true{component} (only if variable matches a spatial coord)
+    # 2. d{component} sigma & mu vs variable for ALL components (always generated)
+    for component in ['x', 'y', 'z']:
+        plot_residual_vs_true(data, variable, component, outdir, model_runs)
+
+    # 3. pred{component} vs true{component} (only if variable matches a spatial coord)
     if variable in ["truex", "x"]:
-        plot_residual_vs_true(data, variable, "x", outdir)
-        plot_pred_vs_true(data, variable, "x", outdir)
+        plot_pred_vs_true(data, variable, "x", outdir, model_runs)
     elif variable in ["truey", "y"]:
-        plot_residual_vs_true(data, variable, "y", outdir)
-        plot_pred_vs_true(data, variable, "y", outdir)
+        plot_pred_vs_true(data, variable, "y", outdir, model_runs)
     elif variable in ["truez", "z"]:
-        plot_residual_vs_true(data, variable, "z", outdir)
-        plot_pred_vs_true(data, variable, "z", outdir)
+        plot_pred_vs_true(data, variable, "z", outdir, model_runs)
 
-    # 3. Summary table (always generated)
+    # 4. Summary table (always generated)
     plot_summary_table(data, variable, outdir)
 
 
@@ -416,7 +761,7 @@ def parse_args():
     p.add_argument(
         "--variables",
         nargs="+",
-        default=["truex", "truey", "truez", "total_signal", "dr"],
+        default=["truex", "truey", "truez", "total_signal"],
         help="Variables to compare"
     )
 
@@ -452,16 +797,25 @@ def main():
 
     # Find model runs
     print(f"Searching {len(directories)} directories for model runs...")
-    model_runs = find_model_runs(directories)
+    model_runs_grouped = find_model_runs(directories)
 
-    if not model_runs:
+    if not model_runs_grouped:
         print("Error: No reconstruction output directories found")
         print("Looking for directories with residuals_1d/ and manifest.json")
         return 1
 
-    print(f"\nFound {sum(len(v) for v in model_runs.values())} model runs:")
-    for model_type, dirs in model_runs.items():
-        print(f"  {model_type}: {len(dirs)} runs")
+    # Flatten to single dict with unique keys for each model run
+    model_runs = {}
+    for model_type, dirs in model_runs_grouped.items():
+        for model_dir in dirs:
+            key = f"{model_type}_{model_dir.name}"
+            model_runs[key] = model_dir
+
+    print(f"\nFound {len(model_runs)} model runs:")
+    for key, model_dir in model_runs.items():
+        manifest = load_manifest(model_dir)
+        label = get_model_label(model_dir, manifest)
+        print(f"  {key}: {label}")
 
     # Create output directory
     if args.outdir is None:
