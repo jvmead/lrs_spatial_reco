@@ -524,7 +524,9 @@ def plot_dr_vs_spatial(data, variable, outdir, model_runs):
         axes[1].set_xscale("log")
 
     plt.tight_layout()
-    outfile = outdir / f"dr_vs_{variable}_1d.png"
+    plot_outdir = outdir / "residuals_1d" / variable
+    plot_outdir.mkdir(parents=True, exist_ok=True)
+    outfile = plot_outdir / "dr.png"
     plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
@@ -561,7 +563,9 @@ def plot_dr_quantiles(data, variable, outdir, model_runs):
     ax.set_ylim(bottom=0)
 
     plt.tight_layout()
-    outfile = outdir / f"dr_vs_{variable}.png"
+    plot_outdir = outdir / "residuals_quantiles" / variable
+    plot_outdir.mkdir(parents=True, exist_ok=True)
+    outfile = plot_outdir / "dr.png"
     plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
@@ -640,7 +644,9 @@ def plot_residual_vs_true(data, variable, component, outdir, model_runs):
         axes[1].set_xscale("log")
 
     plt.tight_layout()
-    outfile = outdir / f"d{component}_vs_{variable}_1d.png"
+    plot_outdir = outdir / "residuals_1d" / variable
+    plot_outdir.mkdir(parents=True, exist_ok=True)
+    outfile = plot_outdir / f"d{component}.png"
     plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
@@ -681,7 +687,9 @@ def plot_residual_quantiles(data, variable, component, outdir, model_runs):
         ax.set_xscale("log")
 
     plt.tight_layout()
-    outfile = outdir / f"d{component}_vs_{variable}.png"
+    plot_outdir = outdir / "residuals_quantiles" / variable
+    plot_outdir.mkdir(parents=True, exist_ok=True)
+    outfile = plot_outdir / f"d{component}.png"
     plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
@@ -721,7 +729,9 @@ def plot_summary_table(
     df_summary = pd.DataFrame(summary)
 
     # Save to CSV
-    outfile = outdir / f"summary_stats_{variable}.csv"
+    summary_outdir = outdir / "summary"
+    summary_outdir.mkdir(parents=True, exist_ok=True)
+    outfile = summary_outdir / f"{variable}.csv"
     df_summary.to_csv(outfile, index=False, float_format="%.3f")
     print(f"Saved: {outfile}")
 
@@ -775,7 +785,9 @@ def plot_pred_vs_true(data, variable, component, outdir, model_runs):
         ax.set_xscale("log")
 
     plt.tight_layout()
-    outfile = outdir / f"pred{component}_vs_{variable}.png"
+    plot_outdir = outdir / "predictions"
+    plot_outdir.mkdir(parents=True, exist_ok=True)
+    outfile = plot_outdir / f"pred{component}_vs_{variable}.png"
     plt.savefig(outfile, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved: {outfile}")
