@@ -496,17 +496,23 @@ def plot_dr_vs_spatial(data, variable, outdir, model_runs):
 
     # Mu plot
     for (model_key, (df, label)), color in zip(data.items(), colors):
-        axes[1].plot(df["bin_x"], df["dr_mu"], marker="o", label=label,
-                    alpha=0.7, linewidth=2, color=color)
-
-        # Add quantile bands if available
+        # Load raw data statistics to get uncertainty bands
         quantile_df = load_dr_residuals_with_quantiles(model_runs[model_key], variable)
         if quantile_df is not None:
             x = quantile_df['bin_center']
-            median = quantile_df['dr_median']
-            q16 = quantile_df['dr_q16']
-            q84 = quantile_df['dr_q84']
-            axes[1].fill_between(x, q16, q84, alpha=0.2, color=color)
+            mu = quantile_df['mu']
+            sigma = quantile_df['sigma']
+            count = quantile_df['count']
+            # Standard error of the mean: sigma / sqrt(N)
+            mu_error = sigma / np.sqrt(count)
+            # Plot mu with statistical uncertainty band
+            axes[1].plot(x, mu, marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
+            axes[1].fill_between(x, mu - mu_error, mu + mu_error, alpha=0.2, color=color)
+        else:
+            # Fallback to binned statistics if raw data unavailable
+            axes[1].plot(df["bin_x"], df["dr_mu"], marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
 
     axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
     axes[1].set_xlabel(variable)
@@ -516,6 +522,43 @@ def plot_dr_vs_spatial(data, variable, outdir, model_runs):
     axes[1].grid(True, alpha=0.3)
     if xscale == "log":
         axes[1].set_xscale("log")
+
+    plt.tight_layout()
+    outfile = outdir / f"dr_vs_{variable}_1d.png"
+    plt.savefig(outfile, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {outfile}")
+
+
+def plot_dr_quantiles(data, variable, outdir, model_runs):
+    """Plot dr quantiles (16th, 50th, 84th percentiles) vs variable."""
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    colors = plt.cm.tab10(range(len(data)))
+    xscale = "log" if variable == "total_signal" else "linear"
+
+    for (model_key, (df, label)), color in zip(data.items(), colors):
+        quantile_df = load_dr_residuals_with_quantiles(model_runs[model_key], variable)
+        if quantile_df is not None:
+            x = quantile_df['bin_center']
+            q16 = quantile_df['dr_q16']
+            q50 = quantile_df['dr_median']
+            q84 = quantile_df['dr_q84']
+
+            # Plot quantile lines
+            ax.plot(x, q50, marker="o", label=f"{label} (median)",
+                   linewidth=2, color=color)
+            ax.fill_between(x, q16, q84, alpha=0.2, color=color,
+                           label=f"{label} (16-84%)")
+
+    ax.set_xlabel(variable)
+    ax.set_ylabel("dr [cm]")
+    ax.set_title(f"3D Residual Quantiles vs {variable}")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    if xscale == "log":
+        ax.set_xscale("log")
+    ax.set_ylim(bottom=0)
 
     plt.tight_layout()
     outfile = outdir / f"dr_vs_{variable}.png"
@@ -569,17 +612,23 @@ def plot_residual_vs_true(data, variable, component, outdir, model_runs):
 
     # Mu plot
     for (model_key, (df, label)), color in zip(data.items(), colors):
-        if mu_col in df.columns:
+        # Load raw data statistics to get uncertainty bands
+        quantile_df = load_residuals_with_quantiles(model_runs[model_key], variable, component)
+        if quantile_df is not None:
+            x = quantile_df['bin_center']
+            mu = quantile_df['mu']
+            sigma = quantile_df['sigma']
+            count = quantile_df['count']
+            # Standard error of the mean: sigma / sqrt(N)
+            mu_error = sigma / np.sqrt(count)
+            # Plot mu with statistical uncertainty band
+            axes[1].plot(x, mu, marker="o", label=label,
+                        alpha=0.7, linewidth=2, color=color)
+            axes[1].fill_between(x, mu - mu_error, mu + mu_error, alpha=0.2, color=color)
+        elif mu_col in df.columns:
+            # Fallback to binned statistics if raw data unavailable
             axes[1].plot(df["bin_x"], df[mu_col], marker="o", label=label,
                         alpha=0.7, linewidth=2, color=color)
-
-            # Add quantile bands if available
-            quantile_df = load_residuals_with_quantiles(model_runs[model_key], variable, component)
-            if quantile_df is not None:
-                x = quantile_df['bin_center']
-                q16 = quantile_df['resid_q16']
-                q84 = quantile_df['resid_q84']
-                axes[1].fill_between(x, q16, q84, alpha=0.2, color=color)
 
     axes[1].axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
     axes[1].set_xlabel(variable)
@@ -589,6 +638,47 @@ def plot_residual_vs_true(data, variable, component, outdir, model_runs):
     axes[1].grid(True, alpha=0.3)
     if xscale == "log":
         axes[1].set_xscale("log")
+
+    plt.tight_layout()
+    outfile = outdir / f"d{component}_vs_{variable}_1d.png"
+    plt.savefig(outfile, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {outfile}")
+
+
+def plot_residual_quantiles(data, variable, component, outdir, model_runs):
+    """Plot d{component} quantiles (16th, 50th, 84th percentiles) vs variable.
+
+    Args:
+        component: 'x', 'y', or 'z'
+    """
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    colors = plt.cm.tab10(range(len(data)))
+    xscale = "log" if variable == "total_signal" else "linear"
+
+    for (model_key, (df, label)), color in zip(data.items(), colors):
+        quantile_df = load_residuals_with_quantiles(model_runs[model_key], variable, component)
+        if quantile_df is not None:
+            x = quantile_df['bin_center']
+            q16 = quantile_df['resid_q16']
+            q50 = quantile_df['resid_median']
+            q84 = quantile_df['resid_q84']
+
+            # Plot quantile lines
+            ax.plot(x, q50, marker="o", label=f"{label} (median)",
+                   linewidth=2, color=color)
+            ax.fill_between(x, q16, q84, alpha=0.2, color=color,
+                           label=f"{label} (16-84%)")
+
+    ax.axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.set_xlabel(variable)
+    ax.set_ylabel(f"d{component} [cm]")
+    ax.set_title(f"{component.upper()}-Residual Quantiles vs {variable}")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    if xscale == "log":
+        ax.set_xscale("log")
 
     plt.tight_layout()
     outfile = outdir / f"d{component}_vs_{variable}.png"
@@ -724,14 +814,21 @@ def compare_models_for_variable(
         return
 
     # Generate plots
-    # 1. dr sigma & mu vs the variable (always generated)
+    # 1. dr sigma & mu vs the variable (1D binned statistics)
     plot_dr_vs_spatial(data, variable, outdir, model_runs)
 
-    # 2. d{component} sigma & mu vs variable for ALL components (always generated)
+    # 2. dr quantiles vs the variable (from raw data)
+    plot_dr_quantiles(data, variable, outdir, model_runs)
+
+    # 3. d{component} sigma & mu vs variable for ALL components (1D binned statistics)
     for component in ['x', 'y', 'z']:
         plot_residual_vs_true(data, variable, component, outdir, model_runs)
 
-    # 3. pred{component} vs true{component} (only if variable matches a spatial coord)
+    # 4. d{component} quantiles vs variable for ALL components (from raw data)
+    for component in ['x', 'y', 'z']:
+        plot_residual_quantiles(data, variable, component, outdir, model_runs)
+
+    # 5. pred{component} vs true{component} (only if variable matches a spatial coord)
     if variable in ["truex", "x"]:
         plot_pred_vs_true(data, variable, "x", outdir, model_runs)
     elif variable in ["truey", "y"]:
@@ -739,7 +836,7 @@ def compare_models_for_variable(
     elif variable in ["truez", "z"]:
         plot_pred_vs_true(data, variable, "z", outdir, model_runs)
 
-    # 4. Summary table (always generated)
+    # 6. Summary table (always generated)
     plot_summary_table(data, variable, outdir)
 
 
